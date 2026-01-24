@@ -7,6 +7,9 @@ from pathlib import Path
 import mediapipe as mp
 from mediapipe.tasks.python import vision
 import json
+import google.generativeai as genai
+import time
+
 
 # Try to use legacy solutions API if available, otherwise use tasks
 try:
@@ -15,6 +18,10 @@ try:
     USE_LEGACY_API = True
 except:
     USE_LEGACY_API = False
+
+# Configure Gemini API
+GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
+genai.configure(api_key=GEMINI_API_KEY)
 
 # ===== CONFIG & SETUP =====
 st.set_page_config(
@@ -559,7 +566,128 @@ def create_video_file(frames, fps, width, height, output_path):
     out.release()
 
 
-# ===== STREAMLIT UI =====
+def get_ai_coaching(metrics, user_context):
+    """
+    Generate AI coaching insights using Gemini API with structured JSON output.
+    Includes rate limit handling (429) and severity-based drill prioritization.
+    """
+    try:
+        if not metrics:
+            return None
+
+        # --- PRE-PROCESSING METRICS ---
+        left_arm_angles = [m["left_arm_angle"] for m in metrics]
+        right_arm_angles = [m["right_arm_angle"] for m in metrics]
+
+        # Key Biomechanical Data Points
+        min_left_arm = (
+            np.min(left_arm_angles) if left_arm_angles else 0
+        )  # Max flexion/extension
+        avg_left_arm = np.mean(left_arm_angles)
+
+        # Head stability
+        head_x_std = np.std([m["head_x"] for m in metrics])
+        head_y_std = np.std([m["head_y"] for m in metrics])
+
+        # Pre-calculate internal severity for context
+        # This helps the model prioritize effectively
+        severity_flags = []
+        if min_left_arm < 135:
+            severity_flags.append("CRITICAL: Lead Arm Collapse (Chicken Wing)")
+        elif min_left_arm < 155:
+            severity_flags.append("MODERATE: Lead Arm Soft")
+
+        if head_x_std > 0.08:
+            severity_flags.append("CRITICAL: Excessive Lateral Sway")
+        elif head_x_std > 0.04:
+            severity_flags.append("MODERATE: Minor Head Sway")
+
+        # Construct the context payload
+        analysis_data = {
+            "biometrics": {
+                "top_of_backswing_lead_arm_angle": f"{min_left_arm:.1f} degrees (Ideal: >160)",
+                "avg_trail_arm_angle": f"{np.mean(right_arm_angles):.1f} degrees",
+                "head_sway_factor": f"{head_x_std:.4f} (Lower is better)",
+                "head_dip_factor": f"{head_y_std:.4f} (Lower is better)",
+            },
+            "severity_assessment": severity_flags,
+            "user_profile": user_context,
+        }
+
+        # Serialize the data correctly (fixing the bug from previous version)
+        analysis_json = json.dumps(analysis_data)
+
+        # --- GEMINI PROMPT ENGINEERING ---
+        model = genai.GenerativeModel("gemini-2.0-flash")
+
+        prompt = f"""
+        You are an elite PGA Tour Biomechanics Coach. Analyze this golfer's data.
+        
+        INPUT DATA:
+        {analysis_json}
+
+        INSTRUCTIONS:
+        1. Compare the golfer's metrics to PGA Tour averages adjusted for their handicap.
+        2. Identify the 1–3 most damaging swing faults ("Swing Killers").
+        3. CRITICAL REQUIREMENT: Prioritize drills by SEVERITY. If a "CRITICAL" fault is detected (like severe sway or chicken wing), that drill MUST be first.
+        4. Customize the drill difficulty based on the user's handicap.
+
+        RESPONSE RULES:
+        - Return VALID JSON ONLY.
+        - Do NOT include markdown, explanations, or extra text.
+        - Keep language concise and instructional.
+        - Drills must be realistic, commonly used by coaches, and mechanically relevant.
+
+        RESPONSE FORMAT:
+        Return valid JSON ONLY with this structure:
+        {{
+            "summary": "1-sentence executive summary highlighting the primary swing fault.",
+            "positives": ["point 1", "point 2"],
+            "negatives": ["point 1", "point 2"],
+            "drills": [
+            {{
+                "problem": "Specific swing fault (e.g. Critical Sway)",
+                "name": "Drill Name",
+                "why": "Why this specific drill fixes the biomechanical issue.",
+                "steps": ["Step 1", "Step 2"]
+            }}
+            ],
+            "pro_tip": "One short advanced tip related to the #1 fault"
+        }}
+        """
+
+        # --- RETRY LOGIC FOR RATE LIMITS (429) ---
+        max_retries = 3
+        base_delay = 2  # Seconds
+
+        for attempt in range(max_retries):
+            try:
+                response = model.generate_content(
+                    prompt, generation_config={"response_mime_type": "application/json"}
+                )
+                return json.loads(response.text)
+
+            except Exception as e:
+                # Check for rate limit error code or message
+                error_str = str(e).lower()
+                if "429" in error_str or "resource exhausted" in error_str:
+                    if attempt < max_retries - 1:
+                        sleep_time = base_delay * (
+                            2**attempt
+                        )  # Exponential backoff: 2s, 4s, 8s...
+                        time.sleep(sleep_time)
+                        continue
+                    else:
+                        return {
+                            "error": "AI Coach is currently busy (Rate Limit). Please try again in 1 minute."
+                        }
+                else:
+                    # Non-retryable error
+                    return {"error": str(e)}
+
+    except Exception as e:
+        return {"error": str(e)}
+
 
 # ===== STREAMLIT UI =====
 
@@ -583,7 +711,7 @@ st.sidebar.markdown(
 )
 
 # Create tabs
-tab1, tab2, tab3 = st.tabs(["📊 ANALYSIS", "📈 METRICS", "ℹ️ INFO"])
+tab1, tab2, tab3, tab4 = st.tabs(["📊 ANALYSIS", "📈 METRICS", "🤖 AI COACH", "ℹ️ INFO"])
 
 with tab1:
     st.markdown(
@@ -655,6 +783,9 @@ with tab1:
                     # Store in session state
                     st.session_state.results = results
                     st.session_state.uploaded_filename = uploaded_file.name
+                    # Clear previous coach cache when new video is analyzed
+                    st.session_state.coach_cache = None
+                    st.session_state.last_context = None
 
                     st.rerun()
 
@@ -1020,32 +1151,211 @@ with tab2:
 with tab3:
     st.markdown(
         """
+        <div style='margin-bottom: 2rem;'>
+            <h2 style='color: #14b8a6; margin-bottom: 0.5rem;'>🤖 AI SWING COACH</h2>
+            <p style='color: #d1d5db; margin: 0;'>PGA-level insights powered by Gemini 2.0 Flash</p>
+        </div>
+    """,
+        unsafe_allow_html=True,
+    )
+
+    # Initialize Session State for Cache
+    if "coach_cache" not in st.session_state:
+        st.session_state.coach_cache = None
+    if "last_context" not in st.session_state:
+        st.session_state.last_context = None
+
+    # --- USER CONTEXT INPUTS ---
+    with st.container():
+        st.markdown(
+            "<div style='background: rgba(59, 130, 246, 0.05); padding: 15px; border-radius: 10px; border: 1px solid rgba(59, 130, 246, 0.2); margin-bottom: 20px;'>",
+            unsafe_allow_html=True,
+        )
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            handicap = st.selectbox(
+                "Your Handicap",
+                ["Pro (+5 to 0)", "Low (1-9)", "Mid (10-19)", "High (20+)", "Beginner"],
+                index=2,
+            )
+        with c2:
+            miss_type = st.selectbox(
+                "Common Miss",
+                [
+                    "Slice (Right)",
+                    "Hook (Left)",
+                    "Fat/Chunk",
+                    "Thin/Top",
+                    "Inconsistent",
+                ],
+                index=0,
+            )
+        with c3:
+            club_used = st.selectbox("Club Used", ["Driver", "Iron", "Wedge"], index=1)
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    # Generate Button
+    if st.button("✨ GENERATE COACHING PLAN", use_container_width=True):
+
+        if "results" not in st.session_state:
+            st.warning("Analyze a swing first.")
+        else:
+            # Create a unique context key to check if inputs changed
+            current_context = f"{handicap}-{miss_type}-{club_used}-{st.session_state.results.get('landmarks_detected_count', 0)}"
+
+            # Check if we can use the cache
+            if (
+                st.session_state.coach_cache
+                and st.session_state.last_context == current_context
+            ):
+                st.success("Loaded from cache (No API usage)")
+            else:
+                # No cache or new context -> Call API
+                with st.spinner("Consulting PGA biomechanics database..."):
+                    st.session_state.coach_response = get_ai_coaching(
+                        st.session_state.results["metrics"],
+                        {
+                            "handicap": handicap,
+                            "common_miss": miss_type,
+                            "club": club_used,
+                        },
+                    )
+                    st.session_state.coach_cache = st.session_state.coach_response
+                    st.session_state.last_context = current_context
+
+            # Get AI Response (from new call or cache)
+            coach_response = st.session_state.coach_cache
+
+            if not coach_response:
+                st.error("No data received.")
+            elif "error" in coach_response:
+                st.error(f"AI Error: {coach_response['error']}")
+            else:
+                # --- DISPLAY RESULTS UI ---
+
+                # 1. Executive Summary
+                st.markdown(
+                    f"""
+                <div style='background: linear-gradient(90deg, rgba(20, 184, 166, 0.2), rgba(59, 130, 246, 0.2)); 
+                            padding: 20px; border-radius: 12px; border-left: 5px solid #14b8a6; margin-bottom: 25px;'>
+                    <h3 style='margin:0; color: #f5f5f5; font-size: 1.2rem;'>🏌️ COACH'S VERDICT</h3>
+                    <p style='margin: 10px 0 0 0; color: #d1d5db; font-size: 1.1rem; font-style: italic;'>
+                        "{coach_response.get('summary', 'Analysis complete.')}"
+                    </p>
+                </div>
+                """,
+                    unsafe_allow_html=True,
+                )
+
+                col_good, col_bad = st.columns(2)
+
+                # 2. What you did well
+                with col_good:
+                    st.markdown(
+                        "<h4 style='color: #14b8a6;'>✅ STRENGTHS</h4>",
+                        unsafe_allow_html=True,
+                    )
+                    for item in coach_response.get("positives", []):
+                        st.markdown(
+                            f"<div style='background: rgba(20, 184, 166, 0.1); padding: 10px; border-radius: 6px; margin-bottom: 8px; border: 1px solid rgba(20, 184, 166, 0.2);'>{item}</div>",
+                            unsafe_allow_html=True,
+                        )
+
+                # 3. What needs work
+                with col_bad:
+                    st.markdown(
+                        "<h4 style='color: #ef4444;'>⚠️ OPPORTUNITIES</h4>",
+                        unsafe_allow_html=True,
+                    )
+                    for item in coach_response.get("negatives", []):
+                        st.markdown(
+                            f"<div style='background: rgba(239, 68, 68, 0.1); padding: 10px; border-radius: 6px; margin-bottom: 8px; border: 1px solid rgba(239, 68, 68, 0.2);'>{item}</div>",
+                            unsafe_allow_html=True,
+                        )
+
+                st.markdown("---")
+
+                # 4. The Drill Card
+                drills = coach_response.get("drills", [])[:3]
+                for idx, drill in enumerate(drills, start=1):
+                    drill_name = drill.get("name", "Custom Drill")
+                    drill_why = drill.get("why", "Improves swing mechanics.")
+                    drill_steps = drill.get("steps", [])
+                    drill_problem = drill.get("problem", "Swing fault")
+
+                # 1. Build the steps (No newlines allowed in the final string)
+                steps_html = ""
+                for i, step in enumerate(drill_steps):
+                    steps_html += f"<li style='color: #d1d5db; margin-bottom: 10px; display: flex; align-items: flex-start;'><span style='background-color: #3b82f6; color: white; border-radius: 50%; width: 20px; height: 20px; display: flex; justify-content: center; align-items: center; font-size: 0.8rem; font-weight: bold; margin-right: 12px; flex-shrink: 0;'>{i+1}</span><span style='line-height: 1.5; margin-top: -2px;'>{step}</span></li>"
+
+                # 2. Build the main card
+                # We use a standard f-string, but we immediately replace all newlines with spaces.
+                # This prevents Streamlit from accidentally breaking the HTML structure.
+                raw_html = f"""
+                <div style='background-color: #0f172a; border: 1px solid #3b82f6; border-radius: 12px; overflow: hidden; margin-top: 20px; margin-bottom: 20px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.5); font-family: sans-serif;'>
+                    <div style='background-color: #3b82f6; padding: 15px 20px; border-bottom: 1px solid #2563eb;'>
+                        <div style='display: flex; align-items: center;'>
+                            <span style='font-size: 1.2rem; margin-right: 10px;'>🛠️</span>
+                            <h4 style='margin: 0; color: white; font-size: 1.1rem; font-weight: 600; letter-spacing: 0.5px;'>RECOMMENDED DRILL: {drill_name}</h4>
+                        </div>
+                         <div style='font-size: 0.8rem; color: rgba(255,255,255,0.8); margin-top: 4px;'>Addressing: {drill_problem}</div>
+                    </div>
+                    <div style='padding: 20px;'>
+                        <div style='margin-bottom: 25px; background: rgba(59, 130, 246, 0.1); padding: 15px; border-radius: 8px; border-left: 3px solid #3b82f6;'>
+                            <div style='color: #93c5fd; font-weight: 700; font-size: 0.8rem; letter-spacing: 1px; margin-bottom: 5px; text-transform: uppercase;'>Why This Works</div>
+                            <div style='color: #e2e8f0; font-size: 0.95rem; line-height: 1.6;'>{drill_why}</div>
+                        </div>
+                        <div>
+                            <div style='color: #93c5fd; font-weight: 700; font-size: 0.8rem; letter-spacing: 1px; margin-bottom: 15px; text-transform: uppercase;'>Instructions</div>
+                            <ul style='list-style-type: none; padding-left: 0; margin: 0;'>
+                                {steps_html}
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+                """
+
+                # 3. CRITICAL STEP: Remove newlines to prevent Markdown errors
+                clean_html = raw_html.replace("\n", "")
+
+                # 4. Render
+                st.markdown(clean_html, unsafe_allow_html=True)
+
+                # 5. Pro Tip
+                st.markdown(
+                    f"""
+                <div style='margin-top: 20px; text-align: center; color: #d97706; font-weight: bold; font-size: 0.9rem; letter-spacing: 1px; border: 1px dashed #d97706; padding: 10px; border-radius: 8px;'>
+                    PRO TIP: {coach_response.get('pro_tip', '')}
+                </div>
+                """,
+                    unsafe_allow_html=True,
+                )
+
+
+with tab4:
+    st.markdown(
+        """
     <h2 style='color: #3b82f6; margin-bottom: 1.5rem;'>ABOUT THIS ANALYZER</h2>
-    
     <div style='margin-bottom: 2rem;'>
         <h3 style='color: #d97706; font-size: 1.1rem; margin-bottom: 1rem;'>CAPABILITIES</h3>
-        
         <div style='background: rgba(59, 130, 246, 0.05); border-left: 4px solid #3b82f6; padding: 1rem; margin-bottom: 1rem; border-radius: 4px;'>
             <p style='color: #3b82f6; font-weight: 600; margin: 0 0 0.5rem 0; text-transform: uppercase; letter-spacing: 0.5px;'>
                 📊 SKELETON TRACKING
             </p>
             <p style='color: #d1d5db; margin: 0;'>Real-time pose detection with 33 body landmarks tracked using MediaPipe's advanced computer vision algorithms.</p>
         </div>
-        
         <div style='background: rgba(217, 119, 6, 0.05); border-left: 4px solid #d97706; padding: 1rem; margin-bottom: 1rem; border-radius: 4px;'>
             <p style='color: #d97706; font-weight: 600; margin: 0 0 0.5rem 0; text-transform: uppercase; letter-spacing: 0.5px;'>
                 👤 HEAD STABILITY
             </p>
             <p style='color: #d1d5db; margin: 0;'>Detects lateral head movement and vertical dipping throughout your swing. Measures position variance and consistency.</p>
         </div>
-        
         <div style='background: rgba(20, 184, 166, 0.05); border-left: 4px solid #14b8a6; padding: 1rem; margin-bottom: 1rem; border-radius: 4px;'>
             <p style='color: #14b8a6; font-weight: 600; margin: 0 0 0.5rem 0; text-transform: uppercase; letter-spacing: 0.5px;'>
                 💪 ARM ANGLE ANALYSIS
             </p>
             <p style='color: #d1d5db; margin: 0;'>Measures lead and trail arm angles at key positions. Identifies power leaks from improper arm mechanics.</p>
         </div>
-        
         <div style='background: rgba(59, 130, 246, 0.05); border-left: 4px solid #3b82f6; padding: 1rem; margin-bottom: 1rem; border-radius: 4px;'>
             <p style='color: #3b82f6; font-weight: 600; margin: 0 0 0.5rem 0; text-transform: uppercase; letter-spacing: 0.5px;'>
                 🎯 SWING PATH TRACING
@@ -1053,19 +1363,15 @@ with tab3:
             <p style='color: #d1d5db; margin: 0;'>Visualizes hand trajectory throughout the swing. Shows swing plane and movement patterns.</p>
         </div>
     </div>
-    
     <h3 style='color: #d97706; font-size: 1.1rem; margin-bottom: 1rem;'>TECHNOLOGY STACK</h3>
-    
     <div style='background: rgba(10, 13, 18, 0.8); border: 1px solid rgba(59, 130, 246, 0.2); padding: 1.5rem; border-radius: 8px; font-family: monospace;'>
         <p style='color: #3b82f6; margin: 0.5rem 0;'>• <span style='color: #d1d5db;'>Framework:</span> Streamlit 1.28+</p>
         <p style='color: #d97706; margin: 0.5rem 0;'>• <span style='color: #d1d5db;'>Vision:</span> OpenCV 4.8+</p>
         <p style='color: #14b8a6; margin: 0.5rem 0;'>• <span style='color: #d1d5db;'>Pose Detection:</span> MediaPipe 0.10.5</p>
         <p style='color: #3b82f6; margin: 0.5rem 0;'>• <span style='color: #d1d5db;'>Computation:</span> NumPy, Pandas</p>
     </div>
-    
     <h3 style='color: #d97706; font-size: 1.1rem; margin: 2rem 0 1rem 0;'>DATA PRIVACY</h3>
     <p style='color: #d1d5db;'>All video processing happens locally on your machine. No data is sent to external servers. Your swing analysis remains private.</p>
-    
     <h3 style='color: #d97706; font-size: 1.1rem; margin: 2rem 0 1rem 0;'>GETTING STARTED</h3>
     <ol style='color: #d1d5db;'>
         <li>Record your golf swing from a side angle</li>
