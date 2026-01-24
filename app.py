@@ -7,10 +7,13 @@ from pathlib import Path
 import mediapipe as mp
 from mediapipe.tasks.python import vision
 import json
-import google.generativeai as genai
 import time
+import warnings
+from google import genai
+from google.genai import types
 
-
+# --- SUPPRESS WARNINGS ---
+warnings.filterwarnings("ignore", category=UserWarning, module="google.protobuf")
 # Try to use legacy solutions API if available, otherwise use tasks
 try:
     from mediapipe import solutions
@@ -21,7 +24,6 @@ except:
 
 # Configure Gemini API
 GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
-genai.configure(api_key=GEMINI_API_KEY)
 
 # ===== CONFIG & SETUP =====
 st.set_page_config(
@@ -617,9 +619,6 @@ def get_ai_coaching(metrics, user_context):
         # Serialize the data correctly (fixing the bug from previous version)
         analysis_json = json.dumps(analysis_data)
 
-        # --- GEMINI PROMPT ENGINEERING ---
-        model = genai.GenerativeModel("gemini-2.0-flash")
-
         prompt = f"""
         You are an elite PGA Tour Biomechanics Coach. Analyze this golfer's data.
         
@@ -657,33 +656,31 @@ def get_ai_coaching(metrics, user_context):
         """
 
         # --- RETRY LOGIC FOR RATE LIMITS (429) ---
+        client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
         max_retries = 3
         base_delay = 2  # Seconds
 
         for attempt in range(max_retries):
             try:
-                response = model.generate_content(
-                    prompt, generation_config={"response_mime_type": "application/json"}
+                response = client.models.generate_content(
+                    model="gemini-2.5-flash",
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json"
+                    ),
                 )
                 return json.loads(response.text)
 
             except Exception as e:
-                # Check for rate limit error code or message
-                error_str = str(e).lower()
-                if "429" in error_str or "resource exhausted" in error_str:
+                if "429" in str(e) or "resource exhausted" in str(e).lower():
                     if attempt < max_retries - 1:
-                        sleep_time = base_delay * (
-                            2**attempt
-                        )  # Exponential backoff: 2s, 4s, 8s...
-                        time.sleep(sleep_time)
+                        time.sleep(base_delay * (2**attempt))
                         continue
                     else:
                         return {
-                            "error": "AI Coach is currently busy (Rate Limit). Please try again in 1 minute."
+                            "error": "AI Coach is busy. Please try again in 1 minute."
                         }
-                else:
-                    # Non-retryable error
-                    return {"error": str(e)}
+                return {"error": str(e)}
 
     except Exception as e:
         return {"error": str(e)}
@@ -751,9 +748,7 @@ with tab1:
             )
 
             # Process button
-            if st.button(
-                "▶ ANALYZE SWING", use_container_width=True, key="analyze_btn"
-            ):
+            if st.button("▶ ANALYZE SWING", width="stretch", key="analyze_btn"):
                 progress_bar = st.progress(0)
                 status_text = st.empty()
 
@@ -865,9 +860,7 @@ with tab1:
                 help="Playback speed multiplier",
             )
 
-            if st.button(
-                "▶ PLAY ORIGINAL", use_container_width=True, key="play_original"
-            ):
+            if st.button("▶ PLAY ORIGINAL", width="stretch", key="play_original"):
                 for frame in results["original_frames"]:
                     frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                     original_frame_display.image(frame_rgb)
@@ -897,9 +890,7 @@ with tab1:
                 help="Playback speed multiplier",
             )
 
-            if st.button(
-                "▶ PLAY ANALYZED", use_container_width=True, key="play_analyzed"
-            ):
+            if st.button("▶ PLAY ANALYZED", width="stretch", key="play_analyzed"):
                 for frame in results["analyzed_frames"]:
                     frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                     analyzed_frame_display.image(frame_rgb)
@@ -1087,7 +1078,7 @@ with tab2:
             """,
                 unsafe_allow_html=True,
             )
-            st.dataframe(df_metrics, use_container_width=True)
+            st.dataframe(df_metrics, width="stretch")
 
             st.markdown(
                 """
@@ -1153,7 +1144,7 @@ with tab3:
         """
         <div style='margin-bottom: 2rem;'>
             <h2 style='color: #14b8a6; margin-bottom: 0.5rem;'>🤖 AI SWING COACH</h2>
-            <p style='color: #d1d5db; margin: 0;'>PGA-level insights powered by Gemini 2.0 Flash</p>
+            <p style='color: #d1d5db; margin: 0;'>PGA-level insights powered by Gemini 2.5 Flash</p>
         </div>
     """,
         unsafe_allow_html=True,
@@ -1195,7 +1186,7 @@ with tab3:
         st.markdown("</div>", unsafe_allow_html=True)
 
     # Generate Button
-    if st.button("✨ GENERATE COACHING PLAN", use_container_width=True):
+    if st.button("✨ GENERATE COACHING PLAN", width="stretch"):
 
         if "results" not in st.session_state:
             st.warning("Analyze a swing first.")
