@@ -721,6 +721,12 @@ with tab1:
         unsafe_allow_html=True,
     )
 
+    # --- RECRUITER / DEMO BUTTON ---
+    col_demo, col_or = st.columns([1, 0.2])
+    if st.button("🚀 LOAD DEMO SWING FILE", width="stretch"):
+        st.session_state["use_demo"] = True
+        st.rerun()
+
     uploaded_file = st.file_uploader(
         "Drop your video file here",
         type=["mp4", "mov", "avi", "mkv"],
@@ -728,73 +734,95 @@ with tab1:
         label_visibility="collapsed",
     )
 
+    # Logic to determine which file to process
+    active_video_path = None
+    active_filename = "demo_swing.mp4"
+    is_demo = False
+
     if uploaded_file is not None:
-        # Save uploaded file temporarily
-        temp_video_path = None
+        st.session_state["use_demo"] = False  # Override demo mode
         try:
             with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp_file:
                 tmp_file.write(uploaded_file.read())
                 tmp_file.flush()
-                temp_video_path = tmp_file.name
+                active_video_path = tmp_file.name
+                active_filename = uploaded_file.name
+        except Exception as e:
+            st.error(f"Upload error: {str(e)}")
 
-            st.markdown(
+    # 2. Check if Demo Mode is active (Low Priority)
+    elif st.session_state.get("use_demo"):
+        if os.path.exists("demo_swing.mp4"):
+            active_video_path = "demo_swing.mp4"
+            is_demo = True
+            st.info("ℹ️ Demo mode active. Using sample swing.")
+        else:
+            st.error("⚠️ 'demo_swing.mp4' not found in project folder.")
+
+    # --- PROCESS THE VIDEO (If we have a valid path) ---
+    if active_video_path:
+        st.markdown(
+            f"""
+        <div style='background: rgba(20, 184, 166, 0.1); border-left: 4px solid #14b8a6; 
+                    padding: 1rem; border-radius: 4px; margin-bottom: 1rem;'>
+            <span style='color: #14b8a6; font-weight: 600;'>✓ Video Ready: {active_filename}</span>
+        </div>
+        """,
+            unsafe_allow_html=True,
+        )
+
+        # Process button
+        if st.button("▶ ANALYZE SWING", width="stretch", key="analyze_btn"):
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+
+            status_text.markdown(
                 """
-            <div style='background: rgba(20, 184, 166, 0.1); border-left: 4px solid #14b8a6; 
-                        padding: 1rem; border-radius: 4px; margin-bottom: 1rem;'>
-                <span style='color: #14b8a6; font-weight: 600;'>✓ Video Ready</span>
+            <div style='color: #3b82f6; text-align: center; font-weight: 600;'>
+                Processing video...
             </div>
             """,
                 unsafe_allow_html=True,
             )
 
-            # Process button
-            if st.button("▶ ANALYZE SWING", width="stretch", key="analyze_btn"):
-                progress_bar = st.progress(0)
-                status_text = st.empty()
+            try:
+                # Process video
+                results = process_video(active_video_path)
 
                 status_text.markdown(
                     """
-                <div style='color: #3b82f6; text-align: center; font-weight: 600;'>
-                    Processing video...
+                <div style='color: #14b8a6; text-align: center; font-weight: 600;'>
+                    ✓ Analysis Complete
                 </div>
                 """,
                     unsafe_allow_html=True,
                 )
+                progress_bar.progress(100)
 
-                try:
-                    # Process video
-                    results = process_video(temp_video_path)
+                # Store in session state
+                st.session_state.results = results
+                st.session_state.uploaded_filename = active_filename
+                st.session_state.playback_frame_index = 0
+                st.session_state.is_playing = False
+                # Clear previous coach cache when new video is analyzed
+                st.session_state.coach_cache = None
+                st.session_state.last_context = None
 
-                    status_text.markdown(
-                        """
-                    <div style='color: #14b8a6; text-align: center; font-weight: 600;'>
-                        ✓ Analysis Complete
-                    </div>
-                    """,
-                        unsafe_allow_html=True,
-                    )
-                    progress_bar.progress(100)
+                st.rerun()
 
-                    # Store in session state
-                    st.session_state.results = results
-                    st.session_state.uploaded_filename = uploaded_file.name
-                    # Clear previous coach cache when new video is analyzed
-                    st.session_state.coach_cache = None
-                    st.session_state.last_context = None
-
-                    st.rerun()
-
-                except Exception as e:
-                    st.error(f"Analysis failed: {str(e)}")
-                finally:
-                    # Clean up temp file with error handling
-                    if temp_video_path and os.path.exists(temp_video_path):
-                        try:
-                            os.remove(temp_video_path)
-                        except PermissionError:
-                            pass
-        except Exception as e:
-            st.error(f"Upload error: {str(e)}")
+            except Exception as e:
+                st.error(f"Analysis failed: {str(e)}")
+            finally:
+                # ONLY delete if it was a temporary upload, NOT if it's the local demo file
+                if (
+                    not is_demo
+                    and active_video_path
+                    and os.path.exists(active_video_path)
+                ):
+                    try:
+                        os.remove(active_video_path)
+                    except PermissionError:
+                        pass
 
     # Display results if available
     if "results" in st.session_state:
@@ -836,7 +864,8 @@ with tab1:
             unsafe_allow_html=True,
         )
 
-        col1, col2 = st.columns(2)
+        # Uses padding columns [1, 2, 2, 1] to restrict width, forcing the video height to fit the screen
+        _, col1, col2, _ = st.columns([3, 2, 2, 3], gap="small")
 
         with col1:
             st.markdown(
