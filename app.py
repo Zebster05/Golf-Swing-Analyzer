@@ -864,8 +864,8 @@ with tab1:
             unsafe_allow_html=True,
         )
 
-        # Uses padding columns [1, 2, 2, 1] to restrict width, forcing the video height to fit the screen
-        _, col1, col2, _ = st.columns([3, 2, 2, 3], gap="small")
+        # Uses padding columns restrict width, forcing the video height to fit the screen
+        _, col1, col2, _ = st.columns([0.5, 5, 5, 0.5], gap="small")
 
         with col1:
             st.markdown(
