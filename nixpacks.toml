@@ -1,7 +1,15 @@
 [phases.setup]
-# We must include python311 because defining this list overrides the defaults.
-# We add xorg.libxcb and others to satisfy the "full" OpenCV.
-nixPkgs = ["python311", "ffmpeg", "glib", "xorg.libxcb", "libGL", "xorg.libX11", "xorg.libXext", "xorg.libXrender"]
+# We explicitly add Python 3.11 and the missing system libraries
+nixPkgs = [
+    "python311",
+    "ffmpeg",
+    "glib",
+    "xorg.libxcb",
+    "xorg.libX11",
+    "xorg.libXext",
+    "xorg.libXrender",
+    "libGL"
+]
 
 [variables]
 PYTHONUNBUFFERED = "1"
