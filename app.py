@@ -26,6 +26,7 @@ except:
 # Configure Gemini API
 # Configure Gemini API
 import os
+
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 # Fallback: Try st.secrets if env var is missing (for local dev)
@@ -482,29 +483,6 @@ def process_video(video_path):
 
                     # Analyze lead arm angle
                     arm_data = analyze_lead_arm_angle(landmarks_list)
-
-                    # Draw arm angle on frame
-                    left_angle_text = f"L-Arm: {arm_data['left_arm_angle']:.1f}°"
-                    right_angle_text = f"R-Arm: {arm_data['right_arm_angle']:.1f}°"
-
-                    cv2.putText(
-                        analyzed_frame,
-                        left_angle_text,
-                        (10, 30),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.7,
-                        (255, 100, 100),
-                        2,
-                    )
-                    cv2.putText(
-                        analyzed_frame,
-                        right_angle_text,
-                        (10, 70),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.7,
-                        (100, 100, 255),
-                        2,
-                    )
 
                     # Trace swing path
                     path_data = trace_swing_path(landmarks_list, analyzed_frame)
