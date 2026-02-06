@@ -23,7 +23,7 @@ except:
     USE_LEGACY_API = False
 
 # Configure Gemini API
-GEMINI_API_KEY = os.environ.get["GEMINI_API_KEY"]
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 # ===== CONFIG & SETUP =====
 st.set_page_config(
