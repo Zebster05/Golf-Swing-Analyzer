@@ -23,7 +23,16 @@ except:
     USE_LEGACY_API = False
 
 # Configure Gemini API
+# Configure Gemini API
+import os
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+
+# Fallback: Try st.secrets if env var is missing (for local dev)
+if not GEMINI_API_KEY:
+    try:
+        GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
+    except:
+        pass
 
 # ===== CONFIG & SETUP =====
 st.set_page_config(
@@ -672,7 +681,7 @@ def get_ai_coaching(metrics, user_context):
         """
 
         # --- RETRY LOGIC FOR RATE LIMITS (429) ---
-        client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
+        client = genai.Client(api_key=GEMINI_API_KEY)
         max_retries = 3
         base_delay = 2  # Seconds
 
