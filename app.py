@@ -78,41 +78,57 @@ st.markdown(
     }
     
     /* Tabs - Professional Tab Bar */
-    .st-emotion-cache-13ln4kf {
-        gap: 1rem;
-        background: linear-gradient(90deg, rgba(59, 130, 246, 0.05) 0%, rgba(20, 184, 166, 0.05) 100%);
-        padding: 0.5rem;
+    /* =======================================
+       IMPROVED TAB NAVIGATION
+       ======================================= */
+    
+    /* 1. The Container holding the tabs */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 8px;
+        background-color: #0e121b;
+        padding: 10px 10px;
         border-radius: 12px;
-        border: 1px solid rgba(59, 130, 246, 0.15);
+        border: 1px solid rgba(59, 130, 246, 0.3);
+        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
         margin-bottom: 2rem;
     }
-    
-    .st-emotion-cache-6qob1r button[kind="secondary"] {
+
+    /* 2. Individual Tab Buttons (Unselected) */
+    .stTabs [data-baseweb="tab"] {
+        height: 55px; /* Taller, easier to click */
+        white-space: pre-wrap;
         background-color: transparent;
-        color: #d1d5db;
-        border: none;
-        border-bottom: 2px solid transparent;
-        padding: 12px 20px;
+        border-radius: 8px;
+        color: #9ca3af; /* Dimmed text */
         font-weight: 600;
-        font-size: 0.95rem;
-        letter-spacing: 0.5px;
+        font-size: 1rem;
         text-transform: uppercase;
-        transition: all 0.3s ease;
-        position: relative;
+        letter-spacing: 1px;
+        border: 1px solid transparent;
+        transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        flex-grow: 1; /* Force tabs to fill width */
     }
-    
-    .st-emotion-cache-6qob1r button[kind="secondary"]:hover {
-        color: #3b82f6;
+
+    /* 3. Hover State */
+    .stTabs [data-baseweb="tab"]:hover {
         background-color: rgba(59, 130, 246, 0.1);
-        border-radius: 8px;
+        color: #3b82f6;
+        border-color: rgba(59, 130, 246, 0.2);
+        transform: translateY(-2px); /* Slight lift */
+    }
+
+    /* 4. Active/Selected Tab - THE GLOW EFFECT */
+    .stTabs [aria-selected="true"] {
+        background: linear-gradient(135deg, rgba(59, 130, 246, 0.2) 0%, rgba(20, 184, 166, 0.2) 100%);
+        color: #ffffff;
+        border: 1px solid rgba(59, 130, 246, 0.5);
+        box-shadow: 0 0 15px rgba(59, 130, 246, 0.3); /* Neon glow */
+        font-weight: 700;
     }
     
-    .st-emotion-cache-6qob1r button[kind="secondary"][aria-selected="true"] {
-        color: #ffffff;
-        background: linear-gradient(135deg, rgba(59, 130, 246, 0.2), rgba(20, 184, 166, 0.15));
-        border-bottom: 2px solid #3b82f6;
-        box-shadow: inset 0 -2px 0 0 #3b82f6;
-        border-radius: 8px;
+    /* Remove the default red/orange line Streamlit adds */
+    .stTabs [data-baseweb="tab-highlight"] {
+        display: none;
     }
     
     /* Buttons */
