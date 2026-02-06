@@ -1,5 +1,6 @@
 import streamlit as st
 import cv2
+import streamlit.components.v1 as components
 import numpy as np
 import tempfile
 import os
@@ -77,36 +78,37 @@ st.markdown(
         margin-bottom: 0.5rem;
     }
     
-    /* Tabs - Professional Tab Bar */
     /* =======================================
-       IMPROVED TAB NAVIGATION
+       COMPACT TAB NAVIGATION
        ======================================= */
     
-    /* 1. The Container holding the tabs */
+    /* 1. The Container holding the tabs - REDUCED PADDING */
     .stTabs [data-baseweb="tab-list"] {
-        gap: 8px;
+        gap: 4px; /* Was 8px */
         background-color: #0e121b;
-        padding: 10px 10px;
-        border-radius: 12px;
+        padding: 4px 4px; /* Was 10px 10px */
+        border-radius: 8px; /* Slightly smaller radius */
         border: 1px solid rgba(59, 130, 246, 0.3);
-        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
-        margin-bottom: 2rem;
+        box-shadow: 0 4px 10px rgba(0, 0, 0, 0.4);
+        margin-bottom: 1rem; /* Reduced bottom margin */
     }
 
-    /* 2. Individual Tab Buttons (Unselected) */
+    /* 2. Individual Tab Buttons - REDUCED HEIGHT */
     .stTabs [data-baseweb="tab"] {
-        height: 55px; /* Taller, easier to click */
+        height: 35px; /* Was 55px */
         white-space: pre-wrap;
         background-color: transparent;
-        border-radius: 8px;
-        color: #9ca3af; /* Dimmed text */
+        border-radius: 6px;
+        color: #9ca3af;
         font-weight: 600;
-        font-size: 1rem;
+        font-size: 0.85rem; /* Smaller text (Was 1rem) */
         text-transform: uppercase;
         letter-spacing: 1px;
         border: 1px solid transparent;
         transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-        flex-grow: 1; /* Force tabs to fill width */
+        flex-grow: 1;
+        padding-top: 0 !important;
+        padding-bottom: 0 !important;
     }
 
     /* 3. Hover State */
@@ -114,21 +116,15 @@ st.markdown(
         background-color: rgba(59, 130, 246, 0.1);
         color: #3b82f6;
         border-color: rgba(59, 130, 246, 0.2);
-        transform: translateY(-2px); /* Slight lift */
     }
 
-    /* 4. Active/Selected Tab - THE GLOW EFFECT */
+    /* 4. Active/Selected Tab */
     .stTabs [aria-selected="true"] {
         background: linear-gradient(135deg, rgba(59, 130, 246, 0.2) 0%, rgba(20, 184, 166, 0.2) 100%);
         color: #ffffff;
         border: 1px solid rgba(59, 130, 246, 0.5);
-        box-shadow: 0 0 15px rgba(59, 130, 246, 0.3); /* Neon glow */
+        box-shadow: 0 0 10px rgba(59, 130, 246, 0.3);
         font-weight: 700;
-    }
-    
-    /* Remove the default red/orange line Streamlit adds */
-    .stTabs [data-baseweb="tab-highlight"] {
-        display: none;
     }
     
     /* Buttons */
@@ -239,7 +235,7 @@ st.markdown(
 
 st.markdown(
     """
-<div style='text-align: center; margin-bottom: 2rem;'>
+<div style='text-align: center; margin-bottom: 2rem; margin-top: -3rem;'>
     <h1 style='margin: 0; font-size: 3rem;'>⛳ GOLF SWING ANALYZER</h1>
     <p style='color: #3b82f6; font-size: 0.9rem; letter-spacing: 2px; text-transform: uppercase; margin-top: 0.5rem;'>TOUR-LEVEL BIOMECHANICAL ANALYSIS</p>
 </div>
@@ -729,9 +725,9 @@ tab1, tab2, tab3, tab4 = st.tabs(["📊 ANALYSIS", "📈 METRICS", "🤖 AI COAC
 with tab1:
     st.markdown(
         """
-    <div style='margin-bottom: 2rem;'>
-        <h2 style='color: #3b82f6; margin-bottom: 0.5rem;'>UPLOAD SWING</h2>
-        <p style='color: #d1d5db; margin: 0;'>Import your golf swing video for AI-powered analysis</p>
+    <div style='margin-bottom: 0.5rem;'>
+        <h2 style='color: #3b82f6; margin-bottom: 0; font-size: 1.5rem;'>UPLOAD SWING</h2>
+        <p style='color: #d1d5db; margin: 0; font-size: 0.9rem;'>Import your golf swing video for AI-powered analysis</p>
     </div>
     """,
         unsafe_allow_html=True,
@@ -771,7 +767,6 @@ with tab1:
         if os.path.exists("demo_swing.mp4"):
             active_video_path = "demo_swing.mp4"
             is_demo = True
-            st.info("ℹ️ Demo mode active. Using sample swing.")
         else:
             st.error("⚠️ 'demo_swing.mp4' not found in project folder.")
 
@@ -824,6 +819,9 @@ with tab1:
                 st.session_state.coach_cache = None
                 st.session_state.last_context = None
 
+                # TRIGGER AUTO-SCROLL
+                st.session_state.should_scroll = True  # <--- ADD THIS LINE
+
                 st.rerun()
 
             except Exception as e:
@@ -842,6 +840,29 @@ with tab1:
 
     # Display results if available
     if "results" in st.session_state:
+        # --- AUTO-SCROLL LOGIC ---
+        # 1. Create an invisible anchor point here
+        st.markdown("<div id='analysis_results'></div>", unsafe_allow_html=True)
+
+        # 2. Check if we need to scroll (only happens right after analysis)
+        if st.session_state.get("should_scroll", False):
+            components.html(
+                """
+                <script>
+                    // Small delay to ensure the element is rendered
+                    setTimeout(function() {
+                        const element = window.parent.document.getElementById('analysis_results');
+                        if (element) {
+                            element.scrollIntoView({behavior: 'smooth', block: 'start'});
+                        }
+                    }, 100);
+                </script>
+                """,
+                height=0,
+                width=0,
+            )
+            # Reset the flag so it doesn't keep scrolling on every interaction
+            st.session_state.should_scroll = False
         results = st.session_state.results
 
         # Status Bar
