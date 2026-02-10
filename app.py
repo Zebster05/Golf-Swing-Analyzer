@@ -381,177 +381,135 @@ def trace_swing_path(landmarks, frame):
     }
 
 
-def process_video(video_path):
-    """Process video and return analyzed frames with metrics"""
-    cap = cv2.VideoCapture(video_path)
+def process_video(input_path, output_path):
+    """Process video, save to file, and return metrics only."""
+    cap = cv2.VideoCapture(input_path)
 
-    # Check if video opened successfully
-    if not cap.isOpened():
-        raise Exception(f"Could not open video file: {video_path}")
-
+    # Video properties
     fps = cap.get(cv2.CAP_PROP_FPS)
-    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-
-    # Validate video properties
-    if width == 0 or height == 0:
-        raise Exception("Invalid video dimensions")
     if fps == 0:
-        fps = 30  # Default fallback
+        fps = 30
 
-    print(f"[DEBUG] Video loaded: {total_frames} frames, {width}x{height} @ {fps} fps")
+    # 1. Calculate New Dimensions (Max 640px width for speed/memory)
+    orig_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    orig_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-    original_frames = []
-    analyzed_frames = []
-    metrics_list = []
+    target_width = 640
+    if orig_width > target_width:
+        scale = target_width / orig_width
+        width = target_width
+        height = int(orig_height * scale)
+    else:
+        width = orig_width
+        height = orig_height
 
-    frame_count = 0
-    path_history = {"left": [], "right": []}
-    landmarks_detected_count = 0
+    # 2. Setup Video Writer (Writes directly to disk!)
+    fourcc = cv2.VideoWriter_fourcc(*"avc1")
+    out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
 
+    # MediaPipe Setup
     # Use legacy API if available
     if USE_LEGACY_API:
         mp_pose = solutions.pose
         mp_drawing = solutions.drawing_utils
-
-        with mp_pose.Pose(
+        pose = mp_pose.Pose(
             static_image_mode=False,
             model_complexity=1,
             smooth_landmarks=True,
             min_detection_confidence=0.3,
             min_tracking_confidence=0.3,
-        ) as pose:
-            while cap.isOpened():
-                ret, frame = cap.read()
-                if not ret:
-                    break
+        )
+    else:
+        # Fallback or error if you strictly need legacy
+        raise Exception("Legacy MediaPipe required for this implementation")
 
-                frame_count += 1
+    metrics_list = []
+    frame_count = 0
+    landmarks_detected_count = 0
+    path_history = {"left": [], "right": []}
 
-                # Convert to RGB (don't flip yet, process original orientation)
-                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    with pose:
+        while cap.isOpened():
+            ret, frame = cap.read()
+            if not ret:
+                break
 
-                # Process pose
-                results = pose.process(frame_rgb)
+            frame_count += 1
 
-                # Store original frame
-                original_frames.append(cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR))
+            # Resize
+            frame = cv2.resize(frame, (width, height))
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-                # Create analyzed frame
-                analyzed_frame = frame_rgb.copy()
+            # Analyze
+            results = pose.process(frame_rgb)
+            analyzed_frame = frame.copy()  # Keep in BGR for OpenCV writing
 
-                # Check if landmarks were detected (match reference code exactly)
-                if results.pose_landmarks:
-                    landmarks = results.pose_landmarks.landmark
-                    landmarks_detected_count += 1
+            if results.pose_landmarks:
+                landmarks_detected_count += 1
 
-                    # Draw skeleton using MediaPipe's drawing utilities
-                    mp_drawing.draw_landmarks(
+                # Draw Skeleton
+                mp_drawing.draw_landmarks(
+                    analyzed_frame, results.pose_landmarks, mp_pose.POSE_CONNECTIONS
+                )
+
+                # --- METRICS CALCULATION ---
+                class SimpleLandmark:
+                    def __init__(self, lm):
+                        self.x, self.y, self.z = lm.x, lm.y, lm.z
+
+                landmarks_list = [
+                    SimpleLandmark(lm) for lm in results.pose_landmarks.landmark
+                ]
+
+                # 1. Arm Angles
+                arm_data = analyze_lead_arm_angle(landmarks_list)
+
+                # 2. Head Stability
+                head_data = analyze_head_stability(landmarks_list, width, height)
+
+                # 3. Path Tracing
+                path_data = trace_swing_path(landmarks_list, analyzed_frame)
+                path_history["left"].append(path_data["left_wrist_pos"])
+                path_history["right"].append(path_data["right_wrist_pos"])
+
+                # Draw Paths
+                if len(path_history["left"]) > 1:
+                    cv2.polylines(
                         analyzed_frame,
-                        results.pose_landmarks,
-                        mp_pose.POSE_CONNECTIONS,
+                        [np.array(path_history["left"])],
+                        False,
+                        (0, 255, 0),
+                        2,
                     )
-
-                    # Convert landmarks to match our expected format
-                    class SimpleLandmark:
-                        def __init__(self, lm):
-                            self.x = lm.x
-                            self.y = lm.y
-                            self.z = lm.z
-
-                    landmarks_list = [SimpleLandmark(lm) for lm in landmarks]
-
-                    # Analyze head stability
-                    head_data = analyze_head_stability(landmarks_list, width, height)
-
-                    # Draw head tracking circle
-                    head_pos = (
-                        int(head_data["head_x"] * width),
-                        int(head_data["head_y"] * height),
-                    )
-                    cv2.circle(analyzed_frame, head_pos, 10, (0, 255, 255), 2)
-                    cv2.putText(
+                    cv2.polylines(
                         analyzed_frame,
-                        "HEAD",
-                        (head_pos[0] - 20, head_pos[1] - 15),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.5,
-                        (0, 255, 255),
+                        [np.array(path_history["right"])],
+                        False,
+                        (255, 0, 0),
                         2,
                     )
 
-                    # Analyze lead arm angle
-                    arm_data = analyze_lead_arm_angle(landmarks_list)
-
-                    # Trace swing path
-                    path_data = trace_swing_path(landmarks_list, analyzed_frame)
-                    path_history["left"].append(path_data["left_wrist_pos"])
-                    path_history["right"].append(path_data["right_wrist_pos"])
-
-                    # Draw hand paths
-                    if len(path_history["left"]) > 1:
-                        for i in range(1, len(path_history["left"])):
-                            cv2.line(
-                                analyzed_frame,
-                                path_history["left"][i - 1],
-                                path_history["left"][i],
-                                (0, 255, 0),
-                                2,
-                            )
-
-                    if len(path_history["right"]) > 1:
-                        for i in range(1, len(path_history["right"])):
-                            cv2.line(
-                                analyzed_frame,
-                                path_history["right"][i - 1],
-                                path_history["right"][i],
-                                (255, 0, 0),
-                                2,
-                            )
-
-                    # Draw hand position circles
-                    cv2.circle(
-                        analyzed_frame, path_data["left_wrist_pos"], 5, (0, 255, 0), -1
-                    )
-                    cv2.circle(
-                        analyzed_frame, path_data["right_wrist_pos"], 5, (255, 0, 0), -1
-                    )
-
-                    # Compile metrics
-                    metrics = {
+                # Save Metrics
+                metrics_list.append(
+                    {
                         "frame": frame_count,
-                        "head_x": head_data["head_x"],
-                        "head_y": head_data["head_y"],
                         "left_arm_angle": arm_data["left_arm_angle"],
                         "right_arm_angle": arm_data["right_arm_angle"],
-                        "left_wrist_x": path_data["left_wrist"][0],
-                        "left_wrist_y": path_data["left_wrist"][1],
-                        "right_wrist_x": path_data["right_wrist"][0],
-                        "right_wrist_y": path_data["right_wrist"][1],
+                        "head_x": head_data["head_x"],
+                        "head_y": head_data["head_y"],
                     }
-                    metrics_list.append(metrics)
+                )
 
-                analyzed_frames.append(cv2.cvtColor(analyzed_frame, cv2.COLOR_RGB2BGR))
-    else:
-        raise Exception(
-            "Legacy MediaPipe API not available. Please downgrade to mediapipe<0.10"
-        )
+            # Write frame to file (NOT memory)
+            out.write(analyzed_frame)
 
     cap.release()
-
-    print(
-        f"[DEBUG] Video processing complete: {landmarks_detected_count}/{frame_count} frames with landmarks"
-    )
+    out.release()
 
     return {
-        "original_frames": original_frames,
-        "analyzed_frames": analyzed_frames,
         "metrics": metrics_list,
+        "total_frames": frame_count,
         "fps": fps,
-        "total_frames": total_frames,
-        "width": width,
-        "height": height,
         "landmarks_detected_count": landmarks_detected_count,
     }
 
@@ -771,59 +729,38 @@ with tab1:
 
         # Process button
         if st.button("▶ ANALYZE SWING", width="stretch", key="analyze_btn"):
-            progress_bar = st.progress(0)
-            status_text = st.empty()
+            if not active_video_path:
+                st.error("Please upload a video or load the demo first.")
+            else:
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+                status_text.text("Initializing AI models...")
 
-            status_text.markdown(
-                """
-            <div style='color: #3b82f6; text-align: center; font-weight: 600;'>
-                Processing video...
-            </div>
-            """,
-                unsafe_allow_html=True,
-            )
+                try:
+                    # Create a temp file for the OUTPUT video
+                    tfile = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+                    output_video_path = tfile.name
+                    tfile.close()
 
-            try:
-                # Process video
-                results = process_video(active_video_path)
+                    # Process video (Write to disk)
+                    status_text.text("Processing video... this may take a moment")
+                    results = process_video(active_video_path, output_video_path)
+                    progress_bar.progress(100)
 
-                status_text.markdown(
-                    """
-                <div style='color: #14b8a6; text-align: center; font-weight: 600;'>
-                    ✓ Analysis Complete
-                </div>
-                """,
-                    unsafe_allow_html=True,
-                )
-                progress_bar.progress(100)
+                    # Store in session state
+                    st.session_state.results = results
+                    st.session_state.analyzed_video_path = (
+                        output_video_path  # Store PATH
+                    )
+                    st.session_state.uploaded_filename = active_filename
+                    st.session_state.coach_cache = None
+                    st.session_state.last_context = None
 
-                # Store in session state
-                st.session_state.results = results
-                st.session_state.uploaded_filename = active_filename
-                st.session_state.playback_frame_index = 0
-                st.session_state.is_playing = False
-                # Clear previous coach cache when new video is analyzed
-                st.session_state.coach_cache = None
-                st.session_state.last_context = None
+                    st.session_state.should_scroll = True
+                    st.rerun()
 
-                # TRIGGER AUTO-SCROLL
-                st.session_state.should_scroll = True  # <--- ADD THIS LINE
-
-                st.rerun()
-
-            except Exception as e:
-                st.error(f"Analysis failed: {str(e)}")
-            finally:
-                # ONLY delete if it was a temporary upload, NOT if it's the local demo file
-                if (
-                    not is_demo
-                    and active_video_path
-                    and os.path.exists(active_video_path)
-                ):
-                    try:
-                        os.remove(active_video_path)
-                    except PermissionError:
-                        pass
+                except Exception as e:
+                    st.error(f"Error during analysis: {str(e)}")
 
     # Display results if available
     if "results" in st.session_state:
@@ -883,73 +820,25 @@ with tab1:
         # Video Playback Section
         st.markdown(
             """
-        <h2 style='color: #3b82f6; margin-bottom: 1.5rem;'>SWING REPLAY</h2>
+        <div style='background-color: #111827; padding: 1.5rem; border-radius: 0.5rem; border: 1px solid #374151; margin-bottom: 2rem;'>
+            <h3 style='color: #f5f5f5; margin-top: 0;'>🎥 SWING REPLAY</h3>
+        </div>
         """,
             unsafe_allow_html=True,
         )
 
-        # Uses padding columns restrict width, forcing the video height to fit the screen
-        _, col1, col2, _ = st.columns([0.5, 5, 5, 0.5], gap="small")
+        col1, col2 = st.columns(2)
 
         with col1:
-            st.markdown(
-                """
-            <div style='background: rgba(59, 130, 246, 0.05); border: 1px solid rgba(59, 130, 246, 0.2);
-                        padding: 1rem; border-radius: 8px; margin-bottom: 1rem;'>
-                <p style='color: #3b82f6; font-weight: 600; text-transform: uppercase; letter-spacing: 1px; 
-                          font-size: 0.85rem; margin: 0 0 0.5rem 0;'>Original</p>
-            </div>
-            """,
-                unsafe_allow_html=True,
-            )
-
-            original_frame_display = st.empty()
-            playback_speed = st.slider(
-                "Speed",
-                0.1,
-                3.0,
-                1.0,
-                key="original_speed",
-                help="Playback speed multiplier",
-            )
-
-            if st.button("▶ PLAY ORIGINAL", width="stretch", key="play_original"):
-                for frame in results["original_frames"]:
-                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                    original_frame_display.image(frame_rgb)
-                    import time
-
-                    time.sleep(1 / (results["fps"] * playback_speed))
+            st.info("ORIGINAL SWING")
+            st.video(active_video_path)
 
         with col2:
-            st.markdown(
-                """
-            <div style='background: rgba(217, 119, 6, 0.05); border: 1px solid rgba(217, 119, 6, 0.2);
-                        padding: 1rem; border-radius: 8px; margin-bottom: 1rem;'>
-                <p style='color: #d97706; font-weight: 600; text-transform: uppercase; letter-spacing: 1px;
-                          font-size: 0.85rem; margin: 0 0 0.5rem 0;'>AI Analyzed</p>
-            </div>
-            """,
-                unsafe_allow_html=True,
-            )
-
-            analyzed_frame_display = st.empty()
-            analyzed_speed = st.slider(
-                "Speed",
-                0.1,
-                3.0,
-                1.0,
-                key="analyzed_speed",
-                help="Playback speed multiplier",
-            )
-
-            if st.button("▶ PLAY ANALYZED", width="stretch", key="play_analyzed"):
-                for frame in results["analyzed_frames"]:
-                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                    analyzed_frame_display.image(frame_rgb)
-                    import time
-
-                    time.sleep(1 / (results["fps"] * analyzed_speed))
+            st.success("AI ANALYZED SWING")
+            if "analyzed_video_path" in st.session_state:
+                st.video(st.session_state.analyzed_video_path)
+            else:
+                st.write("Analysis not available")
 
         # Key Metrics Section
         st.markdown(
