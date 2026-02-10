@@ -24,7 +24,6 @@ except:
     USE_LEGACY_API = False
 
 # Configure Gemini API
-# Configure Gemini API
 import os
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
@@ -92,26 +91,24 @@ st.markdown(
        COMPACT TAB NAVIGATION
        ======================================= */
     
-    /* 1. The Container holding the tabs - REDUCED PADDING */
     .stTabs [data-baseweb="tab-list"] {
-        gap: 4px; /* Was 8px */
+        gap: 4px;
         background-color: #0e121b;
-        padding: 4px 4px; /* Was 10px 10px */
-        border-radius: 8px; /* Slightly smaller radius */
+        padding: 4px 4px;
+        border-radius: 8px;
         border: 1px solid rgba(59, 130, 246, 0.3);
         box-shadow: 0 4px 10px rgba(0, 0, 0, 0.4);
-        margin-bottom: 1rem; /* Reduced bottom margin */
+        margin-bottom: 1rem;
     }
 
-    /* 2. Individual Tab Buttons - REDUCED HEIGHT */
     .stTabs [data-baseweb="tab"] {
-        height: 35px; /* Was 55px */
+        height: 35px;
         white-space: pre-wrap;
         background-color: transparent;
         border-radius: 6px;
         color: #9ca3af;
         font-weight: 600;
-        font-size: 0.85rem; /* Smaller text (Was 1rem) */
+        font-size: 0.85rem;
         text-transform: uppercase;
         letter-spacing: 1px;
         border: 1px solid transparent;
@@ -121,14 +118,12 @@ st.markdown(
         padding-bottom: 0 !important;
     }
 
-    /* 3. Hover State */
     .stTabs [data-baseweb="tab"]:hover {
         background-color: rgba(59, 130, 246, 0.1);
         color: #3b82f6;
         border-color: rgba(59, 130, 246, 0.2);
     }
 
-    /* 4. Active/Selected Tab */
     .stTabs [aria-selected="true"] {
         background: linear-gradient(135deg, rgba(59, 130, 246, 0.2) 0%, rgba(20, 184, 166, 0.2) 100%);
         color: #ffffff;
@@ -218,25 +213,47 @@ st.markdown(
         border-radius: 4px;
     }
     
-    /* Divider */
-    .st-emotion-cache-z5fcqf {
-        border-color: rgba(59, 130, 246, 0.2);
+    /* Video Container Styling */
+    .video-card {
+        background: #0f1219;
+        border: 1px solid #1f2937;
+        border-radius: 12px;
+        padding: 15px;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
     }
     
-    /* Text */
-    body {
-        color: #f5f5f5;
-        background-color: #0a0d12;
+    .video-header {
+        display: flex;
+        align-items: center;
+        margin-bottom: 10px;
+        border-bottom: 1px solid #1f2937;
+        padding-bottom: 10px;
     }
     
-    /* Dataframe */
-    .st-emotion-cache-1wiy60d {
-        background-color: rgba(59, 130, 246, 0.05);
+    .video-badge {
+        font-size: 0.7rem;
+        padding: 2px 8px;
+        border-radius: 12px;
+        font-weight: 700;
+        margin-left: auto;
+        letter-spacing: 1px;
     }
     
-    /* Sliders */
-    .st-emotion-cache-16idsys p {
-        color: #d1d5db;
+    .badge-original {
+        background: rgba(59, 130, 246, 0.2);
+        color: #60a5fa;
+        border: 1px solid rgba(59, 130, 246, 0.3);
+    }
+    
+    .badge-ai {
+        background: rgba(20, 184, 166, 0.2);
+        color: #2dd4bf;
+        border: 1px solid rgba(20, 184, 166, 0.3);
+    }
+
+    /* Custom Progress Bar Color */
+    .stProgress > div > div > div > div {
+        background-image: linear-gradient(to right, #3b82f6, #14b8a6);
     }
 </style>
 """,
@@ -271,55 +288,15 @@ def calculate_angle(a, b, c):
     return angle
 
 
-def draw_landmarks(image, landmarks):
-    """Draw pose landmarks on image using OpenCV"""
-    h, w = image.shape[:2]
-
-    # Draw connections
-    connections = [
-        (11, 13),
-        (13, 15),  # Left arm
-        (12, 14),
-        (14, 16),  # Right arm
-        (11, 12),  # Shoulders
-        (11, 23),
-        (12, 24),  # Torso
-        (23, 24),  # Hips
-        (23, 25),
-        (24, 26),  # Legs
-        (25, 27),
-        (26, 28),  # Lower legs
-    ]
-
-    # Convert landmarks to pixel coordinates
-    points = {}
-    for idx, landmark in enumerate(landmarks):
-        x = int(landmark.x * w)
-        y = int(landmark.y * h)
-        points[idx] = (x, y)
-        # Draw landmark circles
-        cv2.circle(image, (x, y), 4, (0, 255, 0), -1)
-
-    # Draw connections
-    for start, end in connections:
-        if start in points and end in points:
-            cv2.line(image, points[start], points[end], (0, 255, 0), 2)
-
-    return image, points
-
-
 def analyze_head_stability(landmarks, frame_width, frame_height):
     """Track head position to detect swaying or dipping"""
-    # Landmark indices: 0=nose, 9=left_ear, 10=right_ear
     nose = landmarks[0]
     left_ear = landmarks[9]
     right_ear = landmarks[10]
 
-    # Calculate head center
     head_x = (nose.x + left_ear.x + right_ear.x) / 3
     head_y = (nose.y + left_ear.y + right_ear.y) / 3
 
-    # Check for excessive lateral movement (sway)
     horizontal_position = head_x * frame_width
 
     return {
@@ -327,17 +304,11 @@ def analyze_head_stability(landmarks, frame_width, frame_height):
         "head_y": head_y,
         "horizontal_position": horizontal_position,
         "nose": [nose.x, nose.y, nose.z],
-        "left_ear": [left_ear.x, left_ear.y, left_ear.z],
-        "right_ear": [right_ear.x, right_ear.y, right_ear.z],
     }
 
 
 def analyze_lead_arm_angle(landmarks):
     """Measure lead arm angle at top of backswing"""
-    # Landmark indices for arms
-    # Left: 11=shoulder, 13=elbow, 15=wrist
-    # Right: 12=shoulder, 14=elbow, 16=wrist
-
     left_shoulder = [landmarks[11].x, landmarks[11].y, landmarks[11].z]
     left_elbow = [landmarks[13].x, landmarks[13].y, landmarks[13].z]
     left_wrist = [landmarks[15].x, landmarks[15].y, landmarks[15].z]
@@ -346,25 +317,17 @@ def analyze_lead_arm_angle(landmarks):
     right_elbow = [landmarks[14].x, landmarks[14].y, landmarks[14].z]
     right_wrist = [landmarks[16].x, landmarks[16].y, landmarks[16].z]
 
-    # Calculate arm angles
     left_arm_angle = calculate_angle(left_shoulder, left_elbow, left_wrist)
     right_arm_angle = calculate_angle(right_shoulder, right_elbow, right_wrist)
 
     return {
         "left_arm_angle": left_arm_angle,
         "right_arm_angle": right_arm_angle,
-        "left_shoulder": left_shoulder,
-        "left_elbow": left_elbow,
-        "left_wrist": left_wrist,
-        "right_shoulder": right_shoulder,
-        "right_elbow": right_elbow,
-        "right_wrist": right_wrist,
     }
 
 
 def trace_swing_path(landmarks, frame):
     """Trace the path of hands during swing"""
-    # Landmark indices: 15=left_wrist, 16=right_wrist
     left_wrist = [landmarks[15].x, landmarks[15].y, landmarks[15].z]
     right_wrist = [landmarks[16].x, landmarks[16].y, landmarks[16].z]
 
@@ -374,21 +337,20 @@ def trace_swing_path(landmarks, frame):
     right_wrist_pos = (int(right_wrist[0] * w), int(right_wrist[1] * h))
 
     return {
-        "left_wrist": left_wrist,
-        "right_wrist": right_wrist,
         "left_wrist_pos": left_wrist_pos,
         "right_wrist_pos": right_wrist_pos,
     }
 
 
-def process_video(input_path, output_path):
-    """Process video, save to file, and return metrics only."""
+def process_video(input_path, output_path, progress_callback=None):
+    """Process video, save to file, and return metrics. Supports progress callback."""
     cap = cv2.VideoCapture(input_path)
 
     # Video properties
     fps = cap.get(cv2.CAP_PROP_FPS)
     if fps == 0:
         fps = 30
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
     # 1. Calculate New Dimensions (Max 640px width for speed/memory)
     orig_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -403,12 +365,11 @@ def process_video(input_path, output_path):
         width = orig_width
         height = orig_height
 
-    # 2. Setup Video Writer (Writes directly to disk!)
+    # 2. Setup Video Writer
     fourcc = cv2.VideoWriter_fourcc(*"avc1")
     out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
 
     # MediaPipe Setup
-    # Use legacy API if available
     if USE_LEGACY_API:
         mp_pose = solutions.pose
         mp_drawing = solutions.drawing_utils
@@ -420,7 +381,6 @@ def process_video(input_path, output_path):
             min_tracking_confidence=0.3,
         )
     else:
-        # Fallback or error if you strictly need legacy
         raise Exception("Legacy MediaPipe required for this implementation")
 
     metrics_list = []
@@ -436,13 +396,18 @@ def process_video(input_path, output_path):
 
             frame_count += 1
 
+            # Update Progress Bar
+            if progress_callback and total_frames > 0:
+                progress_val = min(frame_count / total_frames, 1.0)
+                progress_callback(progress_val)
+
             # Resize
             frame = cv2.resize(frame, (width, height))
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
             # Analyze
             results = pose.process(frame_rgb)
-            analyzed_frame = frame.copy()  # Keep in BGR for OpenCV writing
+            analyzed_frame = frame.copy()
 
             if results.pose_landmarks:
                 landmarks_detected_count += 1
@@ -500,7 +465,7 @@ def process_video(input_path, output_path):
                     }
                 )
 
-            # Write frame to file (NOT memory)
+            # Write frame to file
             out.write(analyzed_frame)
 
     cap.release()
@@ -514,22 +479,8 @@ def process_video(input_path, output_path):
     }
 
 
-def create_video_file(frames, fps, width, height, output_path):
-    """Create a video file from frames"""
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
-
-    for frame in frames:
-        out.write(frame)
-
-    out.release()
-
-
 def get_ai_coaching(metrics, user_context):
-    """
-    Generate AI coaching insights using Gemini API with structured JSON output.
-    Includes rate limit handling (429) and severity-based drill prioritization.
-    """
+    """Generate AI coaching insights using Gemini API."""
     try:
         if not metrics:
             return None
@@ -538,18 +489,10 @@ def get_ai_coaching(metrics, user_context):
         left_arm_angles = [m["left_arm_angle"] for m in metrics]
         right_arm_angles = [m["right_arm_angle"] for m in metrics]
 
-        # Key Biomechanical Data Points
-        min_left_arm = (
-            np.min(left_arm_angles) if left_arm_angles else 0
-        )  # Max flexion/extension
-        avg_left_arm = np.mean(left_arm_angles)
-
-        # Head stability
+        min_left_arm = np.min(left_arm_angles) if left_arm_angles else 0
         head_x_std = np.std([m["head_x"] for m in metrics])
         head_y_std = np.std([m["head_y"] for m in metrics])
 
-        # Pre-calculate internal severity for context
-        # This helps the model prioritize effectively
         severity_flags = []
         if min_left_arm < 135:
             severity_flags.append("CRITICAL: Lead Arm Collapse (Chicken Wing)")
@@ -561,7 +504,6 @@ def get_ai_coaching(metrics, user_context):
         elif head_x_std > 0.04:
             severity_flags.append("MODERATE: Minor Head Sway")
 
-        # Construct the context payload
         analysis_data = {
             "biometrics": {
                 "top_of_backswing_lead_arm_angle": f"{min_left_arm:.1f} degrees (Ideal: >160)",
@@ -573,7 +515,6 @@ def get_ai_coaching(metrics, user_context):
             "user_profile": user_context,
         }
 
-        # Serialize the data correctly (fixing the bug from previous version)
         analysis_json = json.dumps(analysis_data)
 
         prompt = f"""
@@ -585,14 +526,11 @@ def get_ai_coaching(metrics, user_context):
         INSTRUCTIONS:
         1. Compare the golfer's metrics to PGA Tour averages adjusted for their handicap.
         2. Identify the 1–3 most damaging swing faults ("Swing Killers").
-        3. CRITICAL REQUIREMENT: Prioritize drills by SEVERITY. If a "CRITICAL" fault is detected (like severe sway or chicken wing), that drill MUST be first.
-        4. Customize the drill difficulty based on the user's handicap.
+        3. CRITICAL REQUIREMENT: Prioritize drills by SEVERITY. If a "CRITICAL" fault is detected, that drill MUST be first.
 
         RESPONSE RULES:
         - Return VALID JSON ONLY.
         - Do NOT include markdown, explanations, or extra text.
-        - Keep language concise and instructional.
-        - Drills must be realistic, commonly used by coaches, and mechanically relevant.
 
         RESPONSE FORMAT:
         Return valid JSON ONLY with this structure:
@@ -612,10 +550,9 @@ def get_ai_coaching(metrics, user_context):
         }}
         """
 
-        # --- RETRY LOGIC FOR RATE LIMITS (429) ---
         client = genai.Client(api_key=GEMINI_API_KEY)
         max_retries = 3
-        base_delay = 2  # Seconds
+        base_delay = 2
 
         for attempt in range(max_retries):
             try:
@@ -707,7 +644,7 @@ with tab1:
         except Exception as e:
             st.error(f"Upload error: {str(e)}")
 
-    # 2. Check if Demo Mode is active (Low Priority)
+    # 2. Check if Demo Mode is active
     elif st.session_state.get("use_demo"):
         if os.path.exists("demo_swing.mp4"):
             active_video_path = "demo_swing.mp4"
@@ -715,65 +652,92 @@ with tab1:
         else:
             st.error("⚠️ 'demo_swing.mp4' not found in project folder.")
 
-    # --- PROCESS THE VIDEO (If we have a valid path) ---
+    # --- PROCESS THE VIDEO ---
     if active_video_path:
-        st.markdown(
-            f"""
-        <div style='background: rgba(20, 184, 166, 0.1); border-left: 4px solid #14b8a6; 
-                    padding: 1rem; border-radius: 4px; margin-bottom: 1rem;'>
-            <span style='color: #14b8a6; font-weight: 600;'>✓ Video Ready: {active_filename}</span>
-        </div>
-        """,
-            unsafe_allow_html=True,
-        )
+        # Create a container for the action area
+        action_area = st.empty()
 
-        # Process button
-        if st.button("▶ ANALYZE SWING", width="stretch", key="analyze_btn"):
+        # Render the initial state (Ready message + Button)
+        with action_area.container():
+            st.markdown(
+                f"""
+            <div style='background: rgba(20, 184, 166, 0.1); border-left: 4px solid #14b8a6; 
+                        padding: 1rem; border-radius: 4px; margin-bottom: 1rem;'>
+                <span style='color: #14b8a6; font-weight: 600;'>✓ Video Ready: {active_filename}</span>
+            </div>
+            """,
+                unsafe_allow_html=True,
+            )
+            analyze_pressed = st.button(
+                "▶ ANALYZE SWING", width="stretch", key="analyze_btn"
+            )
+
+        if analyze_pressed:
             if not active_video_path:
                 st.error("Please upload a video or load the demo first.")
             else:
-                progress_bar = st.progress(0)
-                status_text = st.empty()
-                status_text.text("Initializing AI models...")
+                # Clear the "Ready" UI immediately
+                action_area.empty()
 
-                try:
-                    # Create a temp file for the OUTPUT video
-                    tfile = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
-                    output_video_path = tfile.name
-                    tfile.close()
-
-                    # Process video (Write to disk)
-                    status_text.text("Processing video... this may take a moment")
-                    results = process_video(active_video_path, output_video_path)
-                    progress_bar.progress(100)
-
-                    # Store in session state
-                    st.session_state.results = results
-                    st.session_state.analyzed_video_path = (
-                        output_video_path  # Store PATH
+                # Render the Loading UI in the same container space
+                with action_area.container():
+                    st.markdown(
+                        "<div style='margin-bottom: 10px; color: #d1d5db; font-weight: 600;'>INITIALIZING COMPUTER VISION...</div>",
+                        unsafe_allow_html=True,
                     )
-                    st.session_state.uploaded_filename = active_filename
-                    st.session_state.coach_cache = None
-                    st.session_state.last_context = None
+                    progress_bar = st.progress(0)
+                    status_text = st.empty()
 
-                    st.session_state.should_scroll = True
-                    st.rerun()
+                    try:
+                        # Create a temp file for the OUTPUT video
+                        tfile = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+                        output_video_path = tfile.name
+                        tfile.close()
 
-                except Exception as e:
-                    st.error(f"Error during analysis: {str(e)}")
+                        # Define the callback to update the bar
+                        def update_progress(val):
+                            progress_bar.progress(val)
+                            pct = int(val * 100)
+                            if pct < 30:
+                                msg = f"Detecting Pose Landmarks... {pct}%"
+                            elif pct < 60:
+                                msg = f"Computing Biomechanics... {pct}%"
+                            elif pct < 90:
+                                msg = f"Rendering Visual Overlays... {pct}%"
+                            else:
+                                msg = f"Finalizing... {pct}%"
+                            status_text.markdown(
+                                f"<span style='color: #3b82f6; font-weight: bold;'>{msg}</span>",
+                                unsafe_allow_html=True,
+                            )
+
+                        # Process video with callback
+                        results = process_video(
+                            active_video_path, output_video_path, update_progress
+                        )
+
+                        # Store in session state
+                        st.session_state.results = results
+                        st.session_state.analyzed_video_path = output_video_path
+                        st.session_state.uploaded_filename = active_filename
+                        st.session_state.coach_cache = None
+                        st.session_state.last_context = None
+
+                        st.session_state.should_scroll = True
+                        st.rerun()
+
+                    except Exception as e:
+                        st.error(f"Error during analysis: {str(e)}")
 
     # Display results if available
     if "results" in st.session_state:
         # --- AUTO-SCROLL LOGIC ---
-        # 1. Create an invisible anchor point here
         st.markdown("<div id='analysis_results'></div>", unsafe_allow_html=True)
 
-        # 2. Check if we need to scroll (only happens right after analysis)
         if st.session_state.get("should_scroll", False):
             components.html(
                 """
                 <script>
-                    // Small delay to ensure the element is rendered
                     setTimeout(function() {
                         const element = window.parent.document.getElementById('analysis_results');
                         if (element) {
@@ -785,7 +749,6 @@ with tab1:
                 height=0,
                 width=0,
             )
-            # Reset the flag so it doesn't keep scrolling on every interaction
             st.session_state.should_scroll = False
         results = st.session_state.results
 
@@ -817,11 +780,11 @@ with tab1:
             unsafe_allow_html=True,
         )
 
-        # Video Playback Section
+        # === THEMED VIDEO PLAYBACK SECTION ===
         st.markdown(
             """
-        <div style='background-color: #111827; padding: 1.5rem; border-radius: 0.5rem; border: 1px solid #374151; margin-bottom: 2rem;'>
-            <h3 style='color: #f5f5f5; margin-top: 0;'>🎥 SWING REPLAY</h3>
+        <div style='margin-bottom: 1.5rem;'>
+            <h3 style='color: #f5f5f5; margin-top: 0; border-left: 4px solid #3b82f6; padding-left: 10px;'>🎥 SWING REPLAY</h3>
         </div>
         """,
             unsafe_allow_html=True,
@@ -830,11 +793,31 @@ with tab1:
         col1, col2 = st.columns(2)
 
         with col1:
-            st.info("ORIGINAL SWING")
+            st.markdown(
+                """
+            <div class='video-card'>
+                <div class='video-header'>
+                     <span style='color: #e5e7eb; font-weight: 600; font-size: 0.9rem;'>RAW FOOTAGE</span>
+                     <span class='video-badge badge-original'>SOURCE</span>
+                </div>
+            </div>
+            """,
+                unsafe_allow_html=True,
+            )
             st.video(active_video_path)
 
         with col2:
-            st.success("AI ANALYZED SWING")
+            st.markdown(
+                """
+            <div class='video-card'>
+                <div class='video-header'>
+                     <span style='color: #e5e7eb; font-weight: 600; font-size: 0.9rem;'>COMPUTER VISION OVERLAY</span>
+                     <span class='video-badge badge-ai'>AI PROCESSED</span>
+                </div>
+            </div>
+            """,
+                unsafe_allow_html=True,
+            )
             if "analyzed_video_path" in st.session_state:
                 st.video(st.session_state.analyzed_video_path)
             else:
@@ -1216,14 +1199,10 @@ with tab3:
                     drill_steps = drill.get("steps", [])
                     drill_problem = drill.get("problem", "Swing fault")
 
-                # 1. Build the steps (No newlines allowed in the final string)
                 steps_html = ""
                 for i, step in enumerate(drill_steps):
                     steps_html += f"<li style='color: #d1d5db; margin-bottom: 10px; display: flex; align-items: flex-start;'><span style='background-color: #3b82f6; color: white; border-radius: 50%; width: 20px; height: 20px; display: flex; justify-content: center; align-items: center; font-size: 0.8rem; font-weight: bold; margin-right: 12px; flex-shrink: 0;'>{i+1}</span><span style='line-height: 1.5; margin-top: -2px;'>{step}</span></li>"
 
-                # 2. Build the main card
-                # We use a standard f-string, but we immediately replace all newlines with spaces.
-                # This prevents Streamlit from accidentally breaking the HTML structure.
                 raw_html = f"""
                 <div style='background-color: #0f172a; border: 1px solid #3b82f6; border-radius: 12px; overflow: hidden; margin-top: 20px; margin-bottom: 20px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.5); font-family: sans-serif;'>
                     <div style='background-color: #3b82f6; padding: 15px 20px; border-bottom: 1px solid #2563eb;'>
@@ -1248,13 +1227,9 @@ with tab3:
                 </div>
                 """
 
-                # 3. CRITICAL STEP: Remove newlines to prevent Markdown errors
                 clean_html = raw_html.replace("\n", "")
-
-                # 4. Render
                 st.markdown(clean_html, unsafe_allow_html=True)
 
-                # 5. Pro Tip
                 st.markdown(
                     f"""
                 <div style='margin-top: 20px; text-align: center; color: #d97706; font-weight: bold; font-size: 0.9rem; letter-spacing: 1px; border: 1px dashed #d97706; padding: 10px; border-radius: 8px;'>
