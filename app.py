@@ -1080,6 +1080,8 @@ with tab3:
         st.session_state.coach_cache = None
     if "last_context" not in st.session_state:
         st.session_state.last_context = None
+    if "should_scroll_coach" not in st.session_state:
+        st.session_state.should_scroll_coach = False
 
     # --- USER CONTEXT INPUTS ---
     with st.container():
@@ -1125,6 +1127,9 @@ with tab3:
                 and st.session_state.last_context == current_context
             ):
                 st.success("Loaded from cache (No API usage)")
+                st.session_state.should_scroll_coach = (
+                    True  # Trigger scroll on cache hit too
+                )
             else:
                 # No cache or new context -> Call API
                 with st.spinner("Consulting PGA biomechanics database..."):
@@ -1138,66 +1143,88 @@ with tab3:
                     )
                     st.session_state.coach_cache = st.session_state.coach_response
                     st.session_state.last_context = current_context
+                    st.session_state.should_scroll_coach = (
+                        True  # Trigger scroll on new gen
+                    )
 
-            # Get AI Response (from new call or cache)
-            coach_response = st.session_state.coach_cache
+    # --- DISPLAY RESULTS (Outside button so it persists) ---
+    if st.session_state.coach_cache:
+        coach_response = st.session_state.coach_cache
 
-            if not coach_response:
-                st.error("No data received.")
-            elif "error" in coach_response:
-                st.error(f"AI Error: {coach_response['error']}")
-            else:
-                # --- DISPLAY RESULTS UI ---
+        # 1. THE ANCHOR for scrolling
+        st.markdown("<div id='coach_results'></div>", unsafe_allow_html=True)
 
-                # 1. Executive Summary
-                st.markdown(
-                    f"""
-                <div style='background: linear-gradient(90deg, rgba(20, 184, 166, 0.2), rgba(59, 130, 246, 0.2)); 
-                            padding: 20px; border-radius: 12px; border-left: 5px solid #14b8a6; margin-bottom: 25px;'>
-                    <h3 style='margin:0; color: #f5f5f5; font-size: 1.2rem;'>🏌️ COACH'S VERDICT</h3>
-                    <p style='margin: 10px 0 0 0; color: #d1d5db; font-size: 1.1rem; font-style: italic;'>
-                        "{coach_response.get('summary', 'Analysis complete.')}"
-                    </p>
-                </div>
+        # 2. AUTO-SCROLL LOGIC
+        if st.session_state.should_scroll_coach:
+            components.html(
+                """
+                <script>
+                    setTimeout(function() {
+                        const element = window.parent.document.getElementById('coach_results');
+                        if (element) {
+                            element.scrollIntoView({behavior: 'smooth', block: 'start'});
+                        }
+                    }, 100);
+                </script>
                 """,
+                height=0,
+                width=0,
+            )
+            st.session_state.should_scroll_coach = False
+
+        if "error" in coach_response:
+            st.error(f"AI Error: {coach_response['error']}")
+        else:
+            # 1. Executive Summary
+            st.markdown(
+                f"""
+            <div style='background: linear-gradient(90deg, rgba(20, 184, 166, 0.2), rgba(59, 130, 246, 0.2)); 
+                        padding: 20px; border-radius: 12px; border-left: 5px solid #14b8a6; margin-bottom: 25px;'>
+                <h3 style='margin:0; color: #f5f5f5; font-size: 1.2rem;'>🏌️ COACH'S VERDICT</h3>
+                <p style='margin: 10px 0 0 0; color: #d1d5db; font-size: 1.1rem; font-style: italic;'>
+                    "{coach_response.get('summary', 'Analysis complete.')}"
+                </p>
+            </div>
+            """,
+                unsafe_allow_html=True,
+            )
+
+            col_good, col_bad = st.columns(2)
+
+            # 2. What you did well
+            with col_good:
+                st.markdown(
+                    "<h4 style='color: #14b8a6;'>✅ STRENGTHS</h4>",
                     unsafe_allow_html=True,
                 )
-
-                col_good, col_bad = st.columns(2)
-
-                # 2. What you did well
-                with col_good:
+                for item in coach_response.get("positives", []):
                     st.markdown(
-                        "<h4 style='color: #14b8a6;'>✅ STRENGTHS</h4>",
+                        f"<div style='background: rgba(20, 184, 166, 0.1); padding: 10px; border-radius: 6px; margin-bottom: 8px; border: 1px solid rgba(20, 184, 166, 0.2);'>{item}</div>",
                         unsafe_allow_html=True,
                     )
-                    for item in coach_response.get("positives", []):
-                        st.markdown(
-                            f"<div style='background: rgba(20, 184, 166, 0.1); padding: 10px; border-radius: 6px; margin-bottom: 8px; border: 1px solid rgba(20, 184, 166, 0.2);'>{item}</div>",
-                            unsafe_allow_html=True,
-                        )
 
-                # 3. What needs work
-                with col_bad:
+            # 3. What needs work
+            with col_bad:
+                st.markdown(
+                    "<h4 style='color: #ef4444;'>⚠️ OPPORTUNITIES</h4>",
+                    unsafe_allow_html=True,
+                )
+                for item in coach_response.get("negatives", []):
                     st.markdown(
-                        "<h4 style='color: #ef4444;'>⚠️ OPPORTUNITIES</h4>",
+                        f"<div style='background: rgba(239, 68, 68, 0.1); padding: 10px; border-radius: 6px; margin-bottom: 8px; border: 1px solid rgba(239, 68, 68, 0.2);'>{item}</div>",
                         unsafe_allow_html=True,
                     )
-                    for item in coach_response.get("negatives", []):
-                        st.markdown(
-                            f"<div style='background: rgba(239, 68, 68, 0.1); padding: 10px; border-radius: 6px; margin-bottom: 8px; border: 1px solid rgba(239, 68, 68, 0.2);'>{item}</div>",
-                            unsafe_allow_html=True,
-                        )
 
-                st.markdown("---")
+            st.markdown("---")
 
-                # 4. The Drill Card
-                drills = coach_response.get("drills", [])[:3]
-                for idx, drill in enumerate(drills, start=1):
-                    drill_name = drill.get("name", "Custom Drill")
-                    drill_why = drill.get("why", "Improves swing mechanics.")
-                    drill_steps = drill.get("steps", [])
-                    drill_problem = drill.get("problem", "Swing fault")
+            # 4. The Drill Card
+            drills = coach_response.get("drills", [])[:3]
+            if drills:
+                drill = drills[0]  # Display the top priority drill
+                drill_name = drill.get("name", "Custom Drill")
+                drill_why = drill.get("why", "Improves swing mechanics.")
+                drill_steps = drill.get("steps", [])
+                drill_problem = drill.get("problem", "Swing fault")
 
                 steps_html = ""
                 for i, step in enumerate(drill_steps):
@@ -1230,15 +1257,14 @@ with tab3:
                 clean_html = raw_html.replace("\n", "")
                 st.markdown(clean_html, unsafe_allow_html=True)
 
-                st.markdown(
-                    f"""
-                <div style='margin-top: 20px; text-align: center; color: #d97706; font-weight: bold; font-size: 0.9rem; letter-spacing: 1px; border: 1px dashed #d97706; padding: 10px; border-radius: 8px;'>
-                    PRO TIP: {coach_response.get('pro_tip', '')}
-                </div>
-                """,
-                    unsafe_allow_html=True,
-                )
-
+            st.markdown(
+                f"""
+            <div style='margin-top: 20px; text-align: center; color: #d97706; font-weight: bold; font-size: 0.9rem; letter-spacing: 1px; border: 1px dashed #d97706; padding: 10px; border-radius: 8px;'>
+                PRO TIP: {coach_response.get('pro_tip', '')}
+            </div>
+            """,
+                unsafe_allow_html=True,
+            )
 
 with tab4:
     st.markdown(
