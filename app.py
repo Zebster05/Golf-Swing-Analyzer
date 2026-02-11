@@ -1,5 +1,6 @@
 import streamlit as st
 import cv2
+import subprocess
 import streamlit.components.v1 as components
 import numpy as np
 import tempfile
@@ -15,6 +16,10 @@ from google.genai import types
 
 # --- SUPPRESS WARNINGS ---
 warnings.filterwarnings("ignore", category=UserWarning, module="google.protobuf")
+
+# --- FIX: DISABLE MEDIAPIPE GPU (Prevents EGL/OpenGL Errors in Cloud) ---
+os.environ["MEDIAPIPE_DISABLE_GPU"] = "1"
+
 # Try to use legacy solutions API if available, otherwise use tasks
 try:
     from mediapipe import solutions
@@ -24,8 +29,6 @@ except:
     USE_LEGACY_API = False
 
 # Configure Gemini API
-import os
-
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 # Fallback: Try st.secrets if env var is missing (for local dev)
@@ -342,6 +345,37 @@ def trace_swing_path(landmarks, frame):
     }
 
 
+# --- NEW HELPER FOR RAILWAY COMPATIBILITY ---
+def convert_to_h264(input_path, output_path):
+    """
+    Converts a video file to H.264 format using FFmpeg.
+    This ensures the video is playable in web browsers.
+    """
+    try:
+        command = [
+            "ffmpeg",
+            "-y",
+            "-i",
+            input_path,
+            "-vcodec",
+            "libx264",
+            "-acodec",
+            "aac",
+            output_path,
+        ]
+        # Run ffmpeg, suppressing output unless there is an error
+        subprocess.run(
+            command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
+        return True
+    except subprocess.CalledProcessError as e:
+        st.error(f"Video conversion failed. Ensure FFmpeg is installed. Error: {e}")
+        return False
+    except FileNotFoundError:
+        st.error("FFmpeg not found. Please install FFmpeg on the server.")
+        return False
+
+
 def process_video(input_path, output_path, progress_callback=None):
     """Process video, save to file, and return metrics. Supports progress callback."""
     cap = cv2.VideoCapture(input_path)
@@ -366,8 +400,11 @@ def process_video(input_path, output_path, progress_callback=None):
         height = orig_height
 
     # 2. Setup Video Writer
-    fourcc = cv2.VideoWriter_fourcc(*"avc1")
-    out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+    # FIX: Use 'mp4v' for backend processing (works on Linux/Railway without HW accel)
+    # We will write to a temporary file first, then convert it.
+    temp_raw_path = output_path.replace(".mp4", "_raw.mp4")
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    out = cv2.VideoWriter(temp_raw_path, fourcc, fps, (width, height))
 
     # MediaPipe Setup
     if USE_LEGACY_API:
@@ -470,6 +507,14 @@ def process_video(input_path, output_path, progress_callback=None):
 
     cap.release()
     out.release()
+
+    # --- FIX: CONVERT TO BROWSER COMPATIBLE FORMAT ---
+    # Convert the raw 'mp4v' file to 'H.264' so it plays in Chrome/Safari
+    convert_to_h264(temp_raw_path, output_path)
+
+    # Clean up the temporary raw file
+    if os.path.exists(temp_raw_path):
+        os.remove(temp_raw_path)
 
     return {
         "metrics": metrics_list,
