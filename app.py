@@ -14,6 +14,14 @@ import warnings
 from google import genai
 from google.genai import types
 
+st.markdown(
+    """
+    <meta http-equiv="refresh" content="0; url=https://your-railway-url.up.railway.app">
+    """,
+    unsafe_allow_html=True,
+)
+
+st.stop()
 # --- SUPPRESS WARNINGS ---
 warnings.filterwarnings("ignore", category=UserWarning, module="google.protobuf")
 
