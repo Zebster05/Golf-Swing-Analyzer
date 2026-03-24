@@ -670,7 +670,7 @@ with tab1:
 
     # --- RECRUITER / DEMO BUTTON ---
     col_demo, col_or = st.columns([1, 0.2])
-    if st.button("🚀 LOAD DEMO SWING FILE", width="stretch"):
+    if st.button("🚀 PRESS TO LOAD A DEMO VIDEO", width="stretch"):
         st.session_state["use_demo"] = True
         st.rerun()
 
