@@ -6,7 +6,6 @@ import numpy as np
 import tempfile
 import os
 import json
-import time
 import warnings
 from google import genai
 from google.genai import types
@@ -19,6 +18,7 @@ from analysis import (
     hands_mid,
     overlay_layers,
 )
+from gemini_coach import generate_coaching_with_fallback, redact_secrets
 
 # --- SUPPRESS WARNINGS ---
 warnings.filterwarnings("ignore", category=UserWarning, module="google.protobuf")
@@ -570,33 +570,24 @@ def get_ai_coaching(report, user_context):
         """
 
         client = genai.Client(api_key=GEMINI_API_KEY)
-        max_retries = 3
-        base_delay = 2
 
-        for attempt in range(max_retries):
-            try:
-                response = client.models.generate_content(
-                    model="gemini-2.5-flash",
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        response_mime_type="application/json"
-                    ),
-                )
-                return json.loads(response.text)
+        def generate_content(model, contents):
+            return client.models.generate_content(
+                model=model,
+                contents=contents,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json"
+                ),
+            )
 
-            except Exception as e:
-                if "429" in str(e) or "resource exhausted" in str(e).lower():
-                    if attempt < max_retries - 1:
-                        time.sleep(base_delay * (2**attempt))
-                        continue
-                    else:
-                        return {
-                            "error": "AI Coach is busy. Please try again in 1 minute."
-                        }
-                return {"error": str(e)}
+        return generate_coaching_with_fallback(
+            prompt,
+            generate_content,
+            api_key=GEMINI_API_KEY,
+        )
 
     except Exception as e:
-        return {"error": str(e)}
+        return {"error": redact_secrets(e, GEMINI_API_KEY)}
 
 
 # ===== STREAMLIT UI =====
