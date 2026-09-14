@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+
+# Streamlit secrets
+.streamlit/secrets.toml
+
+# Local review / analysis dumps (not app assets)
+_review_frames/
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.webp
+*.webm
+
+# Local videos (demo_swing.mp4 already tracked stays tracked)
+*.mp4
+
+# Models downloaded locally
+*.task
+
+# Tests / tooling
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp

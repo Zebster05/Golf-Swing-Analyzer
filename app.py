@@ -5,23 +5,21 @@ import streamlit.components.v1 as components
 import numpy as np
 import tempfile
 import os
-from pathlib import Path
-import mediapipe as mp
-from mediapipe.tasks.python import vision
 import json
 import time
 import warnings
 from google import genai
 from google.genai import types
-
-st.markdown(
-    """
-    <meta http-equiv="refresh" content="0; url=https://your-railway-url.up.railway.app">
-    """,
-    unsafe_allow_html=True,
+from analysis import (
+    build_insights,
+    build_report,
+    coaching_payload,
+    detect_phases,
+    extract_frame_pose,
+    hands_mid,
+    overlay_layers,
 )
 
-st.stop()
 # --- SUPPRESS WARNINGS ---
 warnings.filterwarnings("ignore", category=UserWarning, module="google.protobuf")
 
@@ -283,95 +281,113 @@ st.markdown(
 
 # ===== HELPER FUNCTIONS =====
 
-
-def calculate_angle(a, b, c):
-    """Calculate angle between three points (in degrees)"""
-    a = np.array(a)
-    b = np.array(b)
-    c = np.array(c)
-
-    ba = a - b
-    bc = c - b
-
-    cos_angle = np.dot(ba, bc) / (np.linalg.norm(ba) * np.linalg.norm(bc) + 1e-6)
-    cos_angle = np.clip(cos_angle, -1.0, 1.0)
-    angle = np.degrees(np.arccos(cos_angle))
-    return angle
+SKELETON_EDGES = [
+    ("ls", "rs"),
+    ("ls", "le"),
+    ("le", "lw"),
+    ("rs", "re"),
+    ("re", "rw"),
+    ("ls", "lh"),
+    ("rs", "rh"),
+    ("lh", "rh"),
+]
 
 
-def analyze_head_stability(landmarks, frame_width, frame_height):
-    """Track head position to detect swaying or dipping"""
-    nose = landmarks[0]
-    left_ear = landmarks[9]
-    right_ear = landmarks[10]
-
-    head_x = (nose.x + left_ear.x + right_ear.x) / 3
-    head_y = (nose.y + left_ear.y + right_ear.y) / 3
-
-    horizontal_position = head_x * frame_width
-
-    return {
-        "head_x": head_x,
-        "head_y": head_y,
-        "horizontal_position": horizontal_position,
-        "nose": [nose.x, nose.y, nose.z],
-    }
+def _px(pt, width, height):
+    return (int(pt[0] * width), int(pt[1] * height))
 
 
-def analyze_lead_arm_angle(landmarks):
-    """Measure lead arm angle at top of backswing"""
-    left_shoulder = [landmarks[11].x, landmarks[11].y, landmarks[11].z]
-    left_elbow = [landmarks[13].x, landmarks[13].y, landmarks[13].z]
-    left_wrist = [landmarks[15].x, landmarks[15].y, landmarks[15].z]
-
-    right_shoulder = [landmarks[12].x, landmarks[12].y, landmarks[12].z]
-    right_elbow = [landmarks[14].x, landmarks[14].y, landmarks[14].z]
-    right_wrist = [landmarks[16].x, landmarks[16].y, landmarks[16].z]
-
-    left_arm_angle = calculate_angle(left_shoulder, left_elbow, left_wrist)
-    right_arm_angle = calculate_angle(right_shoulder, right_elbow, right_wrist)
-
-    return {
-        "left_arm_angle": left_arm_angle,
-        "right_arm_angle": right_arm_angle,
-    }
+def _extend_to_edges(a, b, width, height):
+    ax, ay = a[0] * width, a[1] * height
+    bx, by = b[0] * width, b[1] * height
+    dx, dy = bx - ax, by - ay
+    if abs(dy) < 1e-6:
+        return (0, int(ay)), (width, int(ay))
+    t0 = (0 - ay) / dy
+    t1 = (height - ay) / dy
+    return (int(ax + t0 * dx), 0), (int(ax + t1 * dx), height)
 
 
-def trace_swing_path(landmarks, frame):
-    """Trace the path of hands during swing"""
-    left_wrist = [landmarks[15].x, landmarks[15].y, landmarks[15].z]
-    right_wrist = [landmarks[16].x, landmarks[16].y, landmarks[16].z]
-
-    h, w = frame.shape[:2]
-
-    left_wrist_pos = (int(left_wrist[0] * w), int(left_wrist[1] * h))
-    right_wrist_pos = (int(right_wrist[0] * w), int(right_wrist[1] * h))
-
-    return {
-        "left_wrist_pos": left_wrist_pos,
-        "right_wrist_pos": right_wrist_pos,
-    }
+_OVERLAY_FALLBACK = {
+    "skeleton": True,
+    "head": False,
+    "triangle": True,
+    "plane": True,
+    "handpath": True,
+}
 
 
-# --- NEW HELPER FOR RAILWAY COMPATIBILITY ---
+def draw_pose_overlay(frame, rec, report, path_up, path_down):
+    height, width = frame.shape[:2]
+    overlay = report.get("overlay") or _OVERLAY_FALLBACK
+
+    if overlay.get("skeleton"):
+        for a, b in SKELETON_EDGES:
+            cv2.line(
+                frame,
+                _px(rec[a], width, height),
+                _px(rec[b], width, height),
+                (200, 200, 200),
+                2,
+            )
+        for key in ("ls", "rs", "le", "re", "lw", "rw"):
+            cv2.circle(frame, _px(rec[key], width, height), 3, (255, 220, 120), -1)
+
+    if overlay.get("head"):
+        head_pt = _px((rec["head_x"], rec["head_y"]), width, height)
+        sh_mid = (
+            (rec["ls"][0] + rec["rs"][0]) / 2.0,
+            (rec["ls"][1] + rec["rs"][1]) / 2.0,
+        )
+        cv2.line(frame, head_pt, _px(sh_mid, width, height), (80, 220, 120), 2)
+        cv2.circle(frame, head_pt, 8, (80, 220, 120), 2)
+
+    if overlay.get("triangle"):
+        tri = np.array(
+            [
+                _px(rec["ls"], width, height),
+                _px(rec["rs"], width, height),
+                _px(hands_mid(rec), width, height),
+            ],
+            dtype=np.int32,
+        )
+        cv2.polylines(frame, [tri], True, (80, 220, 220), 2)
+
+    if (
+        overlay.get("plane")
+        and report.get("view") == "dtl"
+        and report.get("plane_a")
+        and report.get("plane_b")
+    ):
+        p0, p1 = _extend_to_edges(report["plane_a"], report["plane_b"], width, height)
+        cv2.line(frame, p0, p1, (50, 180, 255), 2)
+
+    if overlay.get("handpath"):
+        if len(path_up) > 1:
+            cv2.polylines(frame, [np.array(path_up, dtype=np.int32)], False, (80, 220, 80), 2)
+        if len(path_down) > 1:
+            cv2.polylines(
+                frame, [np.array(path_down, dtype=np.int32)], False, (40, 90, 255), 2
+            )
+
+
 def convert_to_h264(input_path, output_path):
-    """
-    Converts a video file to H.264 format using FFmpeg.
-    This ensures the video is playable in web browsers.
-    """
+    """H.264 + 0.5x playback so the overlay plays in slow motion."""
     try:
         command = [
             "ffmpeg",
             "-y",
             "-i",
             input_path,
-            "-vcodec",
+            "-filter:v",
+            "setpts=2.0*PTS",
+            "-an",
+            "-c:v",
             "libx264",
-            "-acodec",
-            "aac",
+            "-pix_fmt",
+            "yuv420p",
             output_path,
         ]
-        # Run ffmpeg, suppressing output unless there is an error
         subprocess.run(
             command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
         )
@@ -384,17 +400,17 @@ def convert_to_h264(input_path, output_path):
         return False
 
 
-def process_video(input_path, output_path, progress_callback=None):
-    """Process video, save to file, and return metrics. Supports progress callback."""
+def process_video(
+    input_path, output_path, progress_callback=None, view="dtl", handedness="right"
+):
+    """Pass 1: landmarks. Then phases + metrics. Pass 2: overlay. Slow-mo encode."""
     cap = cv2.VideoCapture(input_path)
 
-    # Video properties
     fps = cap.get(cv2.CAP_PROP_FPS)
     if fps == 0:
         fps = 30
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-    # 1. Calculate New Dimensions (Max 640px width for speed/memory)
     orig_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     orig_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
@@ -407,17 +423,8 @@ def process_video(input_path, output_path, progress_callback=None):
         width = orig_width
         height = orig_height
 
-    # 2. Setup Video Writer
-    # FIX: Use 'mp4v' for backend processing (works on Linux/Railway without HW accel)
-    # We will write to a temporary file first, then convert it.
-    temp_raw_path = output_path.replace(".mp4", "_raw.mp4")
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    out = cv2.VideoWriter(temp_raw_path, fourcc, fps, (width, height))
-
-    # MediaPipe Setup
     if USE_LEGACY_API:
         mp_pose = solutions.pose
-        mp_drawing = solutions.drawing_utils
         pose = mp_pose.Pose(
             static_image_mode=False,
             model_complexity=1,
@@ -428,143 +435,98 @@ def process_video(input_path, output_path, progress_callback=None):
     else:
         raise Exception("Legacy MediaPipe required for this implementation")
 
-    metrics_list = []
+    pose_by_frame = {}
+    frames_pose = []
     frame_count = 0
-    landmarks_detected_count = 0
-    path_history = {"left": [], "right": []}
 
     with pose:
         while cap.isOpened():
             ret, frame = cap.read()
             if not ret:
                 break
-
             frame_count += 1
-
-            # Update Progress Bar
             if progress_callback and total_frames > 0:
-                progress_val = min(frame_count / total_frames, 1.0)
-                progress_callback(progress_val)
+                progress_callback(0.55 * min(frame_count / total_frames, 1.0))
 
-            # Resize
             frame = cv2.resize(frame, (width, height))
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
-            # Analyze
             results = pose.process(frame_rgb)
-            analyzed_frame = frame.copy()
-
             if results.pose_landmarks:
-                landmarks_detected_count += 1
-
-                # Draw Skeleton
-                mp_drawing.draw_landmarks(
-                    analyzed_frame, results.pose_landmarks, mp_pose.POSE_CONNECTIONS
+                rec = extract_frame_pose(
+                    results.pose_landmarks.landmark, frame_count, handedness
                 )
+                pose_by_frame[frame_count] = rec
+                frames_pose.append(rec)
 
-                # --- METRICS CALCULATION ---
-                class SimpleLandmark:
-                    def __init__(self, lm):
-                        self.x, self.y, self.z = lm.x, lm.y, lm.z
+    cap.release()
 
-                landmarks_list = [
-                    SimpleLandmark(lm) for lm in results.pose_landmarks.landmark
-                ]
+    phases = detect_phases(frames_pose)
+    report = build_report(frames_pose, phases, view, handedness)
+    report["overlay"] = overlay_layers(report)
+    top_video_frame = (
+        frames_pose[phases["top"]]["frame"] if phases["ok"] else None
+    )
 
-                # 1. Arm Angles
-                arm_data = analyze_lead_arm_angle(landmarks_list)
+    temp_raw_path = output_path.replace(".mp4", "_raw.mp4")
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    out = cv2.VideoWriter(temp_raw_path, fourcc, fps, (width, height))
+    cap = cv2.VideoCapture(input_path)
+    path_up, path_down = [], []
+    draw_i = 0
 
-                # 2. Head Stability
-                head_data = analyze_head_stability(landmarks_list, width, height)
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+            break
+        draw_i += 1
+        if progress_callback and total_frames > 0:
+            progress_callback(0.55 + 0.37 * min(draw_i / total_frames, 1.0))
 
-                # 3. Path Tracing
-                path_data = trace_swing_path(landmarks_list, analyzed_frame)
-                path_history["left"].append(path_data["left_wrist_pos"])
-                path_history["right"].append(path_data["right_wrist_pos"])
-
-                # Draw Paths
-                if len(path_history["left"]) > 1:
-                    cv2.polylines(
-                        analyzed_frame,
-                        [np.array(path_history["left"])],
-                        False,
-                        (0, 255, 0),
-                        2,
-                    )
-                    cv2.polylines(
-                        analyzed_frame,
-                        [np.array(path_history["right"])],
-                        False,
-                        (255, 0, 0),
-                        2,
-                    )
-
-                # Save Metrics
-                metrics_list.append(
-                    {
-                        "frame": frame_count,
-                        "left_arm_angle": arm_data["left_arm_angle"],
-                        "right_arm_angle": arm_data["right_arm_angle"],
-                        "head_x": head_data["head_x"],
-                        "head_y": head_data["head_y"],
-                    }
-                )
-
-            # Write frame to file
-            out.write(analyzed_frame)
+        frame = cv2.resize(frame, (width, height))
+        rec = pose_by_frame.get(draw_i)
+        if rec:
+            mid = _px(hands_mid(rec), width, height)
+            if top_video_frame is not None and draw_i > top_video_frame:
+                path_down.append(mid)
+            else:
+                path_up.append(mid)
+            draw_pose_overlay(frame, rec, report, path_up, path_down)
+        out.write(frame)
 
     cap.release()
     out.release()
 
-    # --- FIX: CONVERT TO BROWSER COMPATIBLE FORMAT ---
-    # Convert the raw 'mp4v' file to 'H.264' so it plays in Chrome/Safari
+    if progress_callback:
+        progress_callback(0.95)
     convert_to_h264(temp_raw_path, output_path)
-
-    # Clean up the temporary raw file
     if os.path.exists(temp_raw_path):
         os.remove(temp_raw_path)
+    if progress_callback:
+        progress_callback(1.0)
 
+    path_history = {"up": path_up, "down": path_down}
     return {
-        "metrics": metrics_list,
+        "metrics": frames_pose,
         "total_frames": frame_count,
         "fps": fps,
-        "landmarks_detected_count": landmarks_detected_count,
+        "landmarks_detected_count": len(frames_pose),
+        "phases": phases,
+        "report": report,
+        "path_history": path_history,
+        "view": view,
+        "handedness": handedness,
     }
 
 
-def get_ai_coaching(metrics, user_context):
+def get_ai_coaching(report, user_context):
     """Generate AI coaching insights using Gemini API."""
     try:
-        if not metrics:
+        if not report:
             return None
 
-        # --- PRE-PROCESSING METRICS ---
-        left_arm_angles = [m["left_arm_angle"] for m in metrics]
-        right_arm_angles = [m["right_arm_angle"] for m in metrics]
-
-        min_left_arm = np.min(left_arm_angles) if left_arm_angles else 0
-        head_x_std = np.std([m["head_x"] for m in metrics])
-        head_y_std = np.std([m["head_y"] for m in metrics])
-
-        severity_flags = []
-        if min_left_arm < 135:
-            severity_flags.append("CRITICAL: Lead Arm Collapse (Chicken Wing)")
-        elif min_left_arm < 155:
-            severity_flags.append("MODERATE: Lead Arm Soft")
-
-        if head_x_std > 0.08:
-            severity_flags.append("CRITICAL: Excessive Lateral Sway")
-        elif head_x_std > 0.04:
-            severity_flags.append("MODERATE: Minor Head Sway")
-
         analysis_data = {
-            "biometrics": {
-                "top_of_backswing_lead_arm_angle": f"{min_left_arm:.1f} degrees (Ideal: >160)",
-                "avg_trail_arm_angle": f"{np.mean(right_arm_angles):.1f} degrees",
-                "head_sway_factor": f"{head_x_std:.4f} (Lower is better)",
-                "head_dip_factor": f"{head_y_std:.4f} (Lower is better)",
-            },
-            "severity_assessment": severity_flags,
+            "biometrics": coaching_payload(report),
+            "severity_assessment": report.get("severity", []),
             "user_profile": user_context,
         }
 
@@ -577,9 +539,13 @@ def get_ai_coaching(metrics, user_context):
         {analysis_json}
 
         INSTRUCTIONS:
-        1. Compare the golfer's metrics to PGA Tour averages adjusted for their handicap.
-        2. Identify the 1–3 most damaging swing faults ("Swing Killers").
-        3. CRITICAL REQUIREMENT: Prioritize drills by SEVERITY. If a "CRITICAL" fault is detected, that drill MUST be first.
+        1. You are reviewing a PARTIAL swing dossier, like a coach who only comments on what is on camera.
+        2. Coach ONLY fields inside "observed". Treat "not_scored" as unseen — never invent OTT, plane, wrist, or top-of-swing faults for those fields.
+        3. If observed is thin, say what you can (e.g. head stability, setup) and say what you could not judge. Do not pad with generic swing theory presented as this golfer's faults.
+        4. Compare observed metrics to PGA Tour averages adjusted for handicap when those metrics exist.
+        5. Identify the 1–3 most damaging faults among OBSERVED items only. Prioritize drills by SEVERITY. A CRITICAL observed fault comes first.
+        6. If observed includes ott, early_arm_lift, or a cupped lead wrist, those outrank generic notes.
+        7. Wrist labels are low-confidence 2D estimates. Supporting evidence only, never the sole diagnosis.
 
         RESPONSE RULES:
         - Return VALID JSON ONLY.
@@ -653,6 +619,14 @@ st.sidebar.markdown(
 """,
     unsafe_allow_html=True,
 )
+
+VIEW_LABELS = {"DTL": "dtl", "Face-on": "face_on", "45°": "45"}
+HAND_LABELS = {"Right-handed": "right", "Left-handed": "left"}
+camera_view_label = st.sidebar.selectbox("Camera view", list(VIEW_LABELS.keys()), index=0)
+handedness_label = st.sidebar.selectbox("Handedness", list(HAND_LABELS.keys()), index=0)
+camera_view = VIEW_LABELS[camera_view_label]
+handedness = HAND_LABELS[handedness_label]
+st.sidebar.caption("Set view and handedness before Analyze. DTL is required for plane / OTT.")
 
 # Create tabs
 tab1, tab2, tab3, tab4 = st.tabs(["📊 ANALYSIS", "📈 METRICS", "🤖 AI COACH", "ℹ️ INFO"])
@@ -766,7 +740,11 @@ with tab1:
 
                         # Process video with callback
                         results = process_video(
-                            active_video_path, output_video_path, update_progress
+                            active_video_path,
+                            output_video_path,
+                            update_progress,
+                            view=camera_view,
+                            handedness=handedness,
                         )
 
                         # Store in session state
@@ -873,6 +851,8 @@ with tab1:
             )
             if "analyzed_video_path" in st.session_state:
                 st.video(st.session_state.analyzed_video_path)
+                overlay = (results.get("report") or {}).get("overlay") or {}
+                st.caption(f"Focus: {overlay.get('focus', 'pose')}")
             else:
                 st.write("Analysis not available")
 
@@ -884,66 +864,60 @@ with tab1:
             unsafe_allow_html=True,
         )
 
-        metrics = results["metrics"]
+        report = results.get("report") or {}
+        lead_top = report.get("lead_arm_at_top_deg")
+        plane_label = report.get("plane", "n/a")
+        wrist_label = report.get("lead_wrist_at_top", "n/a")
+        if report.get("ott") is True:
+            ott_txt = "OTT"
+        elif report.get("ott") is False:
+            ott_txt = plane_label
+        else:
+            ott_txt = "not scored"
 
-        # Initialize variables with defaults
-        avg_left_arm = 0
-        avg_right_arm = 0
-        head_x_std = 0
-
-        if metrics:
-            avg_left_arm = np.mean([m["left_arm_angle"] for m in metrics])
-            avg_right_arm = np.mean([m["right_arm_angle"] for m in metrics])
-            head_x_std = np.std([m["head_x"] for m in metrics])
-
-            # Display metrics in a grid
-            col1, col2, col3, col4 = st.columns(4)
-
-            with col1:
-                st.markdown(
-                    f"""
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            lead_txt = f"{lead_top:.1f}°" if lead_top is not None else "n/a"
+            st.markdown(
+                f"""
                 <div class='metric-box'>
-                    <div class='metric-label'>Lead Arm Angle</div>
-                    <div class='metric-value'>{avg_left_arm:.1f}°</div>
+                    <div class='metric-label'>Lead Arm At Top</div>
+                    <div class='metric-value'>{lead_txt}</div>
                 </div>
                 """,
-                    unsafe_allow_html=True,
-                )
-
-            with col2:
-                st.markdown(
-                    f"""
+                unsafe_allow_html=True,
+            )
+        with col2:
+            st.markdown(
+                f"""
                 <div class='metric-box'>
-                    <div class='metric-label'>Trail Arm Angle</div>
-                    <div class='metric-value'>{avg_right_arm:.1f}°</div>
+                    <div class='metric-label'>Connection</div>
+                    <div class='metric-value' style='font-size:1.2rem'>{report.get('connection', 'n/a')}</div>
                 </div>
                 """,
-                    unsafe_allow_html=True,
-                )
-
-            with col3:
-                st.markdown(
-                    f"""
+                unsafe_allow_html=True,
+            )
+        with col3:
+            st.markdown(
+                f"""
                 <div class='metric-box'>
-                    <div class='metric-label'>Head Stability (σ)</div>
-                    <div class='metric-value'>{head_x_std:.4f}</div>
+                    <div class='metric-label'>Plane / Path</div>
+                    <div class='metric-value' style='font-size:1.2rem'>{ott_txt}</div>
                 </div>
                 """,
-                    unsafe_allow_html=True,
-                )
-
-            with col4:
-                st.markdown(
-                    f"""
+                unsafe_allow_html=True,
+            )
+        with col4:
+            st.markdown(
+                f"""
                 <div class='metric-box'>
-                    <div class='metric-label'>Total Frames</div>
-                    <div class='metric-value'>{results["total_frames"]}</div>
+                    <div class='metric-label'>Wrist At Top</div>
+                    <div class='metric-value' style='font-size:1.2rem'>{wrist_label}</div>
                 </div>
                 """,
-                    unsafe_allow_html=True,
-                )
+                unsafe_allow_html=True,
+            )
 
-        # Recommendations Section
         st.markdown(
             """
         <h2 style='color: #14b8a6; margin-top: 2rem; margin-bottom: 1.5rem;'>INSIGHTS</h2>
@@ -951,58 +925,7 @@ with tab1:
             unsafe_allow_html=True,
         )
 
-        recommendations = []
-
-        if avg_left_arm < 150:
-            recommendations.append(
-                (
-                    "⚠️ LEAD ARM EXTENSION",
-                    "Extend your lead arm more at the top of the backswing to maximize power transfer.",
-                    "warning",
-                )
-            )
-        else:
-            recommendations.append(
-                (
-                    "✓ LEAD ARM EXTENSION",
-                    "Excellent arm extension at the top of the backswing.",
-                    "success",
-                )
-            )
-
-        if head_x_std > 0.05:
-            recommendations.append(
-                (
-                    "⚠️ HEAD STABILITY",
-                    "Reduce lateral head movement (swaying) to improve consistency.",
-                    "warning",
-                )
-            )
-        else:
-            recommendations.append(
-                (
-                    "✓ HEAD STABILITY",
-                    "Great head position stability throughout the swing.",
-                    "success",
-                )
-            )
-
-        if avg_right_arm < 90:
-            recommendations.append(
-                (
-                    "⚠️ TRAIL ARM ANGLE",
-                    "Your trail arm appears overly extended. Work on maintaining proper angles.",
-                    "warning",
-                )
-            )
-        else:
-            recommendations.append(
-                (
-                    "✓ TRAIL ARM ANGLE",
-                    "Good trail arm positioning and control.",
-                    "success",
-                )
-            )
+        recommendations = build_insights(report)
 
         for title, msg, rec_type in recommendations:
             if rec_type == "warning":
@@ -1011,6 +934,19 @@ with tab1:
                 <div style='background: rgba(217, 119, 6, 0.1); border-left: 4px solid #d97706;
                             padding: 1rem; border-radius: 4px; margin-bottom: 1rem;'>
                     <p style='color: #d97706; font-weight: 600; margin: 0 0 0.5rem 0; text-transform: uppercase; letter-spacing: 0.5px;'>
+                        {title}
+                    </p>
+                    <p style='color: #d1d5db; margin: 0;'>{msg}</p>
+                </div>
+                """,
+                    unsafe_allow_html=True,
+                )
+            elif rec_type == "info":
+                st.markdown(
+                    f"""
+                <div style='background: rgba(59, 130, 246, 0.1); border-left: 4px solid #3b82f6;
+                            padding: 1rem; border-radius: 4px; margin-bottom: 1rem;'>
+                    <p style='color: #60a5fa; font-weight: 600; margin: 0 0 0.5rem 0; text-transform: uppercase; letter-spacing: 0.5px;'>
                         {title}
                     </p>
                     <p style='color: #d1d5db; margin: 0;'>{msg}</p>
@@ -1042,15 +978,82 @@ with tab2:
 
     if "results" in st.session_state:
         metrics = st.session_state.results["metrics"]
+        report = st.session_state.results.get("report") or {}
+        phases = st.session_state.results.get("phases") or {}
 
         if metrics:
             import pandas as pd
 
-            df_metrics = pd.DataFrame(metrics)
-
             st.markdown(
                 """
             <h3 style='color: #d1d5db; font-size: 0.9rem; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 1rem;'>
+                PHASE SNAPSHOTS
+            </h3>
+            """,
+                unsafe_allow_html=True,
+            )
+            snap_cols = st.columns(3)
+            snap_defs = [
+                ("Address", phases.get("address")),
+                ("Top", phases.get("top")),
+                ("Mid-down", phases.get("mid_down")),
+            ]
+            for col, (label, idx) in zip(snap_cols, snap_defs):
+                if idx is not None and 0 <= idx < len(metrics):
+                    f = metrics[idx]
+                    lead = f["right_arm_angle"] if report.get("handedness") == "left" else f["left_arm_angle"]
+                    trail = f["left_arm_angle"] if report.get("handedness") == "left" else f["right_arm_angle"]
+                    body = f"frame {f['frame']}<br>lead {lead:.0f}° · trail {trail:.0f}°"
+                else:
+                    body = "n/a"
+                col.markdown(
+                    f"<div class='metric-box'><div class='metric-label'>{label}</div>"
+                    f"<div style='color:#f5f5f5;font-size:0.95rem'>{body}</div></div>",
+                    unsafe_allow_html=True,
+                )
+
+            not_scored = report.get("not_scored") or []
+            skipped_txt = (
+                " · ".join(f"{item['field']} ({item['reason']})" for item in not_scored)
+                if not_scored
+                else "none"
+            )
+            st.markdown(
+                f"""
+            <p style='color:#d1d5db;margin:1.5rem 0 0.5rem 0'>
+                observed: <b>{', '.join(sorted((report.get('observed') or {}).keys())) or 'none'}</b>
+            </p>
+            <p style='color:#9ca3af;margin:0 0 0.5rem 0'>
+                not scored: <b>{skipped_txt}</b>
+            </p>
+            <p style='color:#d1d5db;margin:0 0 0.5rem 0'>
+                connection: <b>{report.get('connection', 'n/a')}</b>
+                · triangle: <b>{report.get('triangle_at_top', 'n/a')}</b>
+                · plane: <b>{report.get('plane', 'n/a')}</b>
+                · ott: <b>{report.get('ott')}</b>
+                · path: <b>{report.get('hand_path', 'n/a')}</b>
+                · wrist: <b>{report.get('lead_wrist_at_top', 'n/a')}</b>
+            </p>
+            """,
+                unsafe_allow_html=True,
+            )
+
+            df_metrics = pd.DataFrame(
+                [
+                    {
+                        "frame": f["frame"],
+                        "left_arm_angle": f["left_arm_angle"],
+                        "right_arm_angle": f["right_arm_angle"],
+                        "head_x": f["head_x"],
+                        "head_y": f["head_y"],
+                    }
+                    for f in metrics
+                ]
+            )
+
+            st.markdown(
+                """
+            <h3 style='color: #d1d5db; font-size: 0.9rem; text-transform: uppercase; letter-spacing: 1px; margin: 2rem 0 1rem 0;'>
                 FRAME-BY-FRAME ANALYSIS
             </h3>
             """,
@@ -1172,7 +1175,12 @@ with tab3:
             st.warning("Analyze a swing first.")
         else:
             # Create a unique context key to check if inputs changed
-            current_context = f"{handicap}-{miss_type}-{club_used}-{st.session_state.results.get('landmarks_detected_count', 0)}"
+            current_context = (
+                f"{handicap}-{miss_type}-{club_used}-"
+                f"{st.session_state.results.get('landmarks_detected_count', 0)}-"
+                f"{st.session_state.results.get('view')}-"
+                f"{st.session_state.results.get('handedness')}"
+            )
 
             # Check if we can use the cache
             if (
@@ -1187,11 +1195,13 @@ with tab3:
                 # No cache or new context -> Call API
                 with st.spinner("Consulting PGA biomechanics database..."):
                     st.session_state.coach_response = get_ai_coaching(
-                        st.session_state.results["metrics"],
+                        st.session_state.results.get("report"),
                         {
                             "handicap": handicap,
                             "common_miss": miss_type,
                             "club": club_used,
+                            "view": st.session_state.results.get("view"),
+                            "handedness": st.session_state.results.get("handedness"),
                         },
                     )
                     st.session_state.coach_cache = st.session_state.coach_response
