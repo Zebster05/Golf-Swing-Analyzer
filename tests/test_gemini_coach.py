@@ -40,6 +40,26 @@ def _coaching_json():
     }
 
 
+class ModelListTests(unittest.TestCase):
+    def test_validated_free_tier_order(self):
+        self.assertEqual(
+            GEMINI_COACH_MODELS,
+            (
+                "gemini-3.6-flash",
+                "gemini-3.5-flash",
+                "gemini-3.8-flash",
+                "gemini-3.7-flash",
+                "gemini-flash-latest",
+                "gemini-3-flash-preview",
+                "gemini-3.5-flash-lite",
+                "gemini-3.1-flash-lite",
+                "gemini-flash-lite-latest",
+            ),
+        )
+        for removed in ("gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"):
+            self.assertNotIn(removed, GEMINI_COACH_MODELS)
+
+
 class ErrorClassificationTests(unittest.TestCase):
     def test_retryable_status_codes(self):
         for code in (429, 503, 404):
