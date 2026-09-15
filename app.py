@@ -5,7 +5,9 @@ import streamlit.components.v1 as components
 import numpy as np
 import tempfile
 import os
+import shutil
 import json
+import urllib.request
 import warnings
 from google import genai
 from google.genai import types
@@ -26,13 +28,18 @@ warnings.filterwarnings("ignore", category=UserWarning, module="google.protobuf"
 # --- FIX: DISABLE MEDIAPIPE GPU (Prevents EGL/OpenGL Errors in Cloud) ---
 os.environ["MEDIAPIPE_DISABLE_GPU"] = "1"
 
-# Try to use legacy solutions API if available, otherwise use tasks
+# Legacy solutions API (MediaPipe 0.10) or Tasks API (1.0+).
 try:
     from mediapipe import solutions
 
     USE_LEGACY_API = True
-except:
+except Exception:
     USE_LEGACY_API = False
+
+POSE_MODEL_URL = (
+    "https://storage.googleapis.com/mediapipe-models/"
+    "pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task"
+)
 
 # Configure Gemini API
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
@@ -297,22 +304,11 @@ def _px(pt, width, height):
     return (int(pt[0] * width), int(pt[1] * height))
 
 
-def _extend_to_edges(a, b, width, height):
-    ax, ay = a[0] * width, a[1] * height
-    bx, by = b[0] * width, b[1] * height
-    dx, dy = bx - ax, by - ay
-    if abs(dy) < 1e-6:
-        return (0, int(ay)), (width, int(ay))
-    t0 = (0 - ay) / dy
-    t1 = (height - ay) / dy
-    return (int(ax + t0 * dx), 0), (int(ax + t1 * dx), height)
-
-
 _OVERLAY_FALLBACK = {
     "skeleton": True,
     "head": False,
     "triangle": True,
-    "plane": True,
+    "plane": False,
     "handpath": True,
 }
 
@@ -353,29 +349,34 @@ def draw_pose_overlay(frame, rec, report, path_up, path_down):
         )
         cv2.polylines(frame, [tri], True, (80, 220, 220), 2)
 
-    if (
-        overlay.get("plane")
-        and report.get("view") == "dtl"
-        and report.get("plane_a")
-        and report.get("plane_b")
-    ):
-        p0, p1 = _extend_to_edges(report["plane_a"], report["plane_b"], width, height)
-        cv2.line(frame, p0, p1, (50, 180, 255), 2)
+    if len(path_up) > 1:
+        cv2.polylines(frame, [np.array(path_up, dtype=np.int32)], False, (80, 220, 80), 2)
+    if len(path_down) > 1:
+        cv2.polylines(
+            frame, [np.array(path_down, dtype=np.int32)], False, (40, 90, 255), 2
+        )
 
-    if overlay.get("handpath"):
-        if len(path_up) > 1:
-            cv2.polylines(frame, [np.array(path_up, dtype=np.int32)], False, (80, 220, 80), 2)
-        if len(path_down) > 1:
-            cv2.polylines(
-                frame, [np.array(path_down, dtype=np.int32)], False, (40, 90, 255), 2
-            )
+
+def _ffmpeg_bin():
+    found = shutil.which("ffmpeg")
+    if found:
+        return found
+    try:
+        import imageio_ffmpeg
+
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:
+        return None
 
 
 def convert_to_h264(input_path, output_path):
-    """H.264 + 0.5x playback so the overlay plays in slow motion."""
+    """H.264 + 0.5x playback so the overlay plays in the browser."""
+    ffmpeg = _ffmpeg_bin()
+    if not ffmpeg:
+        return False
     try:
         command = [
-            "ffmpeg",
+            ffmpeg,
             "-y",
             "-i",
             input_path,
@@ -391,13 +392,72 @@ def convert_to_h264(input_path, output_path):
         subprocess.run(
             command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
         )
-        return True
-    except subprocess.CalledProcessError as e:
-        st.error(f"Video conversion failed. Ensure FFmpeg is installed. Error: {e}")
+        return os.path.isfile(output_path) and os.path.getsize(output_path) > 0
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError):
         return False
-    except FileNotFoundError:
-        st.error("FFmpeg not found. Please install FFmpeg on the server.")
-        return False
+
+
+def _ensure_pose_model():
+    dest = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "models",
+        "pose_landmarker_lite.task",
+    )
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    if os.path.isfile(dest) and os.path.getsize(dest) > 1000:
+        return dest
+    urllib.request.urlretrieve(POSE_MODEL_URL, dest)
+    return dest
+
+
+def _open_pose():
+    """Return (context manager, detect(frame_rgb, frame_idx, fps) -> landmarks|None)."""
+    if USE_LEGACY_API:
+        pose = solutions.pose.Pose(
+            static_image_mode=False,
+            model_complexity=1,
+            smooth_landmarks=True,
+            min_detection_confidence=0.3,
+            min_tracking_confidence=0.3,
+        )
+
+        def detect(frame_rgb, frame_idx, fps):
+            results = pose.process(frame_rgb)
+            if results.pose_landmarks:
+                return results.pose_landmarks.landmark
+            return None
+
+        return pose, detect
+
+    from mediapipe import Image, ImageFormat
+    from mediapipe.tasks.python.core.base_options import BaseOptions
+    from mediapipe.tasks.python.vision import PoseLandmarker, PoseLandmarkerOptions
+    from mediapipe.tasks.python.vision.core.vision_task_running_mode import (
+        VisionTaskRunningMode,
+    )
+
+    landmarker = PoseLandmarker.create_from_options(
+        PoseLandmarkerOptions(
+            base_options=BaseOptions(model_asset_path=_ensure_pose_model()),
+            running_mode=VisionTaskRunningMode.VIDEO,
+            min_pose_detection_confidence=0.3,
+            min_pose_presence_confidence=0.3,
+            min_tracking_confidence=0.3,
+        )
+    )
+
+    def detect(frame_rgb, frame_idx, fps):
+        mp_image = Image(
+            image_format=ImageFormat.SRGB,
+            data=np.ascontiguousarray(frame_rgb),
+        )
+        ts = int((frame_idx - 1) * 1000 / max(fps, 1))
+        result = landmarker.detect_for_video(mp_image, ts)
+        if result.pose_landmarks:
+            return result.pose_landmarks[0]
+        return None
+
+    return landmarker, detect
 
 
 def process_video(
@@ -423,17 +483,7 @@ def process_video(
         width = orig_width
         height = orig_height
 
-    if USE_LEGACY_API:
-        mp_pose = solutions.pose
-        pose = mp_pose.Pose(
-            static_image_mode=False,
-            model_complexity=1,
-            smooth_landmarks=True,
-            min_detection_confidence=0.3,
-            min_tracking_confidence=0.3,
-        )
-    else:
-        raise Exception("Legacy MediaPipe required for this implementation")
+    pose, detect_pose = _open_pose()
 
     pose_by_frame = {}
     frames_pose = []
@@ -450,11 +500,9 @@ def process_video(
 
             frame = cv2.resize(frame, (width, height))
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            results = pose.process(frame_rgb)
-            if results.pose_landmarks:
-                rec = extract_frame_pose(
-                    results.pose_landmarks.landmark, frame_count, handedness
-                )
+            landmarks = detect_pose(frame_rgb, frame_count, fps)
+            if landmarks:
+                rec = extract_frame_pose(landmarks, frame_count, handedness)
                 pose_by_frame[frame_count] = rec
                 frames_pose.append(rec)
 
@@ -498,7 +546,11 @@ def process_video(
 
     if progress_callback:
         progress_callback(0.95)
-    convert_to_h264(temp_raw_path, output_path)
+    if not convert_to_h264(temp_raw_path, output_path):
+        shutil.copy2(temp_raw_path, output_path)
+        st.warning(
+            "FFmpeg H.264 encode failed. Showing the raw overlay (may not play in every browser)."
+        )
     if os.path.exists(temp_raw_path):
         os.remove(temp_raw_path)
     if progress_callback:
@@ -546,6 +598,7 @@ def get_ai_coaching(report, user_context):
         5. Identify the 1–3 most damaging faults among OBSERVED items only. Prioritize drills by SEVERITY. A CRITICAL observed fault comes first.
         6. If observed includes ott, early_arm_lift, or a cupped lead wrist, those outrank generic notes.
         7. Wrist labels are low-confidence 2D estimates. Supporting evidence only, never the sole diagnosis.
+        8. user_profile.golfer_note is optional, in the golfer's own words (what they felt or want explained). Address that note using observed data. If they name a miss you cannot see (e.g. slice) say so, and only link it to observed mechanics that could cause it. Never add a fault just because the note mentioned it.
 
         RESPONSE RULES:
         - Return VALID JSON ONLY.
@@ -857,12 +910,16 @@ with tab1:
 
         report = results.get("report") or {}
         lead_top = report.get("lead_arm_at_top_deg")
-        plane_label = report.get("plane", "n/a")
         wrist_label = report.get("lead_wrist_at_top", "n/a")
+        path = report.get("hand_path")
         if report.get("ott") is True:
-            ott_txt = "OTT"
+            ott_txt = "OTT (outside-in)"
+        elif path == "inside_out":
+            ott_txt = "inside-out"
+        elif path == "on":
+            ott_txt = "on path"
         elif report.get("ott") is False:
-            ott_txt = plane_label
+            ott_txt = report.get("plane", "n/a")
         else:
             ott_txt = "not scored"
 
@@ -1157,6 +1214,13 @@ with tab3:
             )
         with c3:
             club_used = st.selectbox("Club Used", ["Driver", "Iron", "Wedge"], index=1)
+        golfer_note = st.text_area(
+            "Your note (optional)",
+            placeholder="On this swing I slice and I don't understand why.",
+            max_chars=400,
+            height=80,
+            help="Plain language for the coach. Gemini will use it as context, not as proof of a fault.",
+        )
         st.markdown("</div>", unsafe_allow_html=True)
 
     # Generate Button
@@ -1166,8 +1230,9 @@ with tab3:
             st.warning("Analyze a swing first.")
         else:
             # Create a unique context key to check if inputs changed
+            note = (golfer_note or "").strip()
             current_context = (
-                f"{handicap}-{miss_type}-{club_used}-"
+                f"{handicap}-{miss_type}-{club_used}-{note}-"
                 f"{st.session_state.results.get('landmarks_detected_count', 0)}-"
                 f"{st.session_state.results.get('view')}-"
                 f"{st.session_state.results.get('handedness')}"
@@ -1191,6 +1256,7 @@ with tab3:
                             "handicap": handicap,
                             "common_miss": miss_type,
                             "club": club_used,
+                            "golfer_note": note,
                             "view": st.session_state.results.get("view"),
                             "handedness": st.session_state.results.get("handedness"),
                         },

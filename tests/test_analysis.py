@@ -37,6 +37,10 @@ def _landmarks(overrides=None):
         20: (0.51, 0.75),
         23: (0.44, 0.62),
         24: (0.56, 0.62),
+        27: (0.45, 0.88),
+        28: (0.55, 0.88),
+        31: (0.45, 0.92),
+        32: (0.55, 0.92),
     }
     if overrides:
         defaults.update(overrides)
@@ -57,18 +61,18 @@ def _frame(i, hands_y, hands_x=0.50, extra=None):
     return extract_frame_pose(_landmarks(overrides), i, "right")
 
 
-def _arc_swing(n=30, down_x=0.50):
+def _arc_swing(n=30, down_x=0.50, up_x=0.50):
     frames = []
     top = 14
     for i in range(n):
         if i <= top:
             t = i / top
             y = 0.78 - 0.50 * t
-            x = 0.50
+            x = up_x if i >= 3 else 0.50 + (up_x - 0.50) * (i / 3)
         else:
             t = (i - top) / (n - 1 - top)
             y = 0.28 + 0.52 * t
-            x = 0.50 + (down_x - 0.50) * t
+            x = down_x
         frames.append(_frame(i + 1, y, x))
     return frames
 
@@ -170,7 +174,24 @@ class PlaneTests(unittest.TestCase):
         phases = detect_phases(frames)
         out = analyze_plane(frames, phases, "dtl", "right")
         self.assertEqual(out["hand_path"], "outside_in")
+        self.assertEqual(out["plane"], "steep")
         self.assertTrue(out["ott"])
+
+    def test_inside_downswing_is_shallow(self):
+        frames = _arc_swing(up_x=0.68, down_x=0.50)
+        phases = detect_phases(frames)
+        out = analyze_plane(frames, phases, "dtl", "right")
+        self.assertEqual(out["hand_path"], "inside_out")
+        self.assertEqual(out["plane"], "shallow")
+        self.assertFalse(out["ott"])
+
+    def test_matched_paths_are_on_plane(self):
+        frames = _arc_swing()
+        phases = detect_phases(frames)
+        out = analyze_plane(frames, phases, "dtl", "right")
+        self.assertEqual(out["hand_path"], "on")
+        self.assertEqual(out["plane"], "on_plane")
+        self.assertFalse(out["ott"])
 
 
 class WristTests(unittest.TestCase):
@@ -229,13 +250,13 @@ class PayloadTests(unittest.TestCase):
 
 
 class OverlayLayersTests(unittest.TestCase):
-    def test_ott_uses_plane_and_handpath(self):
+    def test_ott_uses_handpath(self):
         frames = _arc_swing(down_x=0.72)
         report = build_report(frames, detect_phases(frames), "dtl", "right")
         self.assertTrue(report["observed"].get("ott"))
         layers = overlay_layers(report)
         self.assertEqual(layers["flaw_id"], "ott")
-        self.assertTrue(layers["plane"])
+        self.assertFalse(layers["plane"])
         self.assertTrue(layers["handpath"])
         self.assertFalse(layers["triangle"])
         self.assertFalse(layers["skeleton"])
@@ -301,21 +322,30 @@ class OverlayLayersTests(unittest.TestCase):
             {"observed": {"ott": True, "head_sway": "excessive"}}
         )
         self.assertEqual(layers["flaw_id"], "ott")
-        self.assertTrue(layers["plane"])
+        self.assertFalse(layers["plane"])
         self.assertTrue(layers["handpath"])
         self.assertFalse(layers["head"])
         self.assertFalse(layers["triangle"])
 
-    def test_steep_without_ott_uses_plane(self):
+    def test_steep_without_ott_uses_handpath(self):
         layers = overlay_layers(
             {"observed": {"plane": "steep", "ott": False, "head_sway": "stable"}}
         )
         self.assertEqual(layers["flaw_id"], "steep")
-        self.assertTrue(layers["plane"])
+        self.assertFalse(layers["plane"])
         self.assertTrue(layers["handpath"])
         self.assertFalse(layers["triangle"])
         self.assertFalse(layers["skeleton"])
         self.assertEqual(layers["rank"], "MODERATE")
+
+    def test_shallow_without_ott_uses_handpath(self):
+        layers = overlay_layers(
+            {"observed": {"plane": "shallow", "ott": False, "head_sway": "stable"}}
+        )
+        self.assertEqual(layers["flaw_id"], "shallow")
+        self.assertFalse(layers["plane"])
+        self.assertTrue(layers["handpath"])
+        self.assertEqual(layers["focus"], "shallow plane")
 
     def test_payload_omits_overlay(self):
         frames = _arc_swing()
