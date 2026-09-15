@@ -85,6 +85,8 @@ def extract_frame_pose(landmarks, frame_idx, handedness="right"):
         "rw": rw,
         "lh": _xy(landmarks[23]),
         "rh": _xy(landmarks[24]),
+        "lf": _xy(landmarks[31]),
+        "rf": _xy(landmarks[32]),
         "lead_index": _xy(landmarks[lead["index"]]),
         "lead_pinky": _xy(landmarks[lead["pinky"]]),
     }
@@ -242,14 +244,6 @@ def analyze_connection(frames, phases, handedness="right"):
     }
 
 
-def _line_at_y(a, b, y):
-    dy = b[1] - a[1]
-    if abs(dy) < 1e-8:
-        return (a[0], y)
-    t = (y - a[1]) / dy
-    return (a[0] + t * (b[0] - a[0]), y)
-
-
 def _closest_x_at_y(frames, y_target):
     best = frames[0]
     best_d = abs(hands_mid(best)[1] - y_target)
@@ -261,6 +255,7 @@ def _closest_x_at_y(frames, y_target):
 
 
 def analyze_plane(frames, phases, view, handedness="right"):
+    """Plane / OTT from green (backswing) vs orange (downswing) at the same height."""
     view = (view or "dtl").lower().replace("-", "_").replace(" ", "_")
     if view == "45":
         view = "45"
@@ -273,28 +268,16 @@ def analyze_plane(frames, phases, view, handedness="right"):
     }
     if view != "dtl":
         return {**blank, "skip_reason": "view_not_dtl"}
-    if phases.get("address") is None or phases.get("top") is None or phases.get("mid_down") is None:
+    if (
+        phases.get("address") is None
+        or phases.get("top") is None
+        or phases.get("mid_down") is None
+        or phases.get("impact") is None
+    ):
         return {**blank, "skip_reason": "top_not_locked"}
 
-    handedness = "left" if handedness == "left" else "right"
-    addr = frames[phases["address"]]
     mid_f = frames[phases["mid_down"]]
-    hands_a = hands_mid(addr)
-    ground = (hands_a[0], min(0.99, hands_a[1] + 0.22))
-    mid_h = hands_mid(mid_f)
-    head = (addr["head_x"], addr["head_y"])
-    plane_pt = _line_at_y(hands_a, ground, mid_h[1])
-
-    d_hands_head = _dist(mid_h, head)
-    d_plane_head = _dist(plane_pt, head)
-    if d_hands_head + 0.025 < d_plane_head:
-        plane = "steep"
-    elif d_hands_head > d_plane_head + 0.025:
-        plane = "shallow"
-    else:
-        plane = "on_plane"
-
-    y_target = mid_h[1]
+    y_target = hands_mid(mid_f)[1]
     up_f = _closest_x_at_y(frames[phases["address"] : phases["top"] + 1], y_target)
     down_f = _closest_x_at_y(frames[phases["top"] : phases["impact"] + 1], y_target)
     x_up = hands_mid(up_f)[0]
@@ -302,17 +285,20 @@ def analyze_plane(frames, phases, view, handedness="right"):
     spine = (mid_f["ls"][0] + mid_f["rs"][0]) / 2.0
     if abs(x_down - spine) > abs(x_up - spine) + 0.015:
         hand_path = "outside_in"
+        plane = "steep"
     elif abs(x_down - spine) + 0.015 < abs(x_up - spine):
         hand_path = "inside_out"
+        plane = "shallow"
     else:
         hand_path = "on"
+        plane = "on_plane"
 
     return {
         "plane": plane,
         "ott": hand_path == "outside_in",
         "hand_path": hand_path,
-        "plane_a": hands_a,
-        "plane_b": ground,
+        "plane_a": None,
+        "plane_b": None,
         "skip_reason": None,
     }
 
@@ -530,7 +516,7 @@ _OVERLAY_BY_FLAW = {
         "skeleton": False,
         "head": False,
         "triangle": False,
-        "plane": True,
+        "plane": False,
         "handpath": True,
     },
     "steep": {
@@ -538,7 +524,15 @@ _OVERLAY_BY_FLAW = {
         "skeleton": False,
         "head": False,
         "triangle": False,
-        "plane": True,
+        "plane": False,
+        "handpath": True,
+    },
+    "shallow": {
+        "focus": "shallow plane",
+        "skeleton": False,
+        "head": False,
+        "triangle": False,
+        "plane": False,
         "handpath": True,
     },
     "head": {
@@ -600,8 +594,11 @@ def _overlay_candidates(observed):
 
     if observed.get("triangle_at_top") == "collapsed":
         candidates.append(("triangle", "MODERATE"))
-    if observed.get("plane") == "steep" and observed.get("ott") is not True:
-        candidates.append(("steep", "MODERATE"))
+    if observed.get("ott") is not True:
+        if observed.get("plane") == "steep":
+            candidates.append(("steep", "MODERATE"))
+        elif observed.get("plane") == "shallow":
+            candidates.append(("shallow", "MODERATE"))
     if observed.get("lead_wrist_at_top") == "cupped":
         candidates.append(("wrist", "MODERATE"))
     if observed.get("head_sway") == "moderate":
@@ -701,16 +698,18 @@ def build_insights(report):
                     "warning",
                 )
             )
-        elif observed.get("plane") == "steep":
-            items.append(
-                ("SWING PLANE", "Hands come down steeper than the address plane.", "warning")
-            )
         elif observed.get("plane") == "shallow":
             items.append(
-                ("SWING PLANE", "Hands come down under the address plane (shallow).", "warning")
+                (
+                    "SWING PLANE",
+                    "Downswing hand path is inside the backswing (shallow / inside-out).",
+                    "warning",
+                )
             )
         elif observed.get("plane") == "on_plane":
-            items.append(("SWING PLANE", "Hands stay on the address plane.", "success"))
+            items.append(
+                ("SWING PLANE", "Downswing hand path matches the backswing.", "success")
+            )
 
     wrist = observed.get("lead_wrist_at_top")
     if wrist == "cupped":
