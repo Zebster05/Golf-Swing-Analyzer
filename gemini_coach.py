@@ -58,6 +58,39 @@ def redact_secrets(message, api_key=None):
     return text
 
 
+def compose_golfer_note(post_title, post_body):
+    """Join Reddit post title + OP body for backward-compatible golfer_note."""
+    title = (post_title or "").strip()
+    body = (post_body or "").strip()
+    if title and body:
+        return f"{title}\n\n{body}"
+    return title or body
+
+
+def coach_user_profile(
+    handicap,
+    common_miss,
+    club,
+    view,
+    handedness,
+    post_title="",
+    post_body="",
+):
+    """Build Gemini user_profile from coach tab inputs."""
+    title = (post_title or "").strip()
+    body = (post_body or "").strip()
+    return {
+        "handicap": handicap,
+        "common_miss": common_miss,
+        "club": club,
+        "view": view,
+        "handedness": handedness,
+        "post_title": title,
+        "post_body": body,
+        "golfer_note": compose_golfer_note(title, body),
+    }
+
+
 def is_rate_limit_error(exc):
     if _error_code(exc) == 429:
         return True

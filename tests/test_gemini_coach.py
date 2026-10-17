@@ -3,6 +3,8 @@ import unittest
 
 from gemini_coach import (
     GEMINI_COACH_MODELS,
+    coach_user_profile,
+    compose_golfer_note,
     generate_coaching_with_fallback,
     is_rate_limit_error,
     is_retryable_gemini_error,
@@ -199,6 +201,57 @@ class FallbackTests(unittest.TestCase):
         self.assertNotIn(key, result["error"])
         self.assertIn("[redacted]", result["error"])
         self.assertEqual(redact_secrets(f"token {key}", key), "token [redacted]")
+
+
+class CoachUserProfileTests(unittest.TestCase):
+    def test_composes_title_and_body(self):
+        profile = coach_user_profile(
+            "Mid (10-19)",
+            "Slice (Right)",
+            "Iron",
+            "dtl",
+            "right",
+            post_title="  Why do I slice?  ",
+            post_body="  I hang back and lose it right.  ",
+        )
+        self.assertEqual(profile["post_title"], "Why do I slice?")
+        self.assertEqual(profile["post_body"], "I hang back and lose it right.")
+        self.assertEqual(
+            profile["golfer_note"],
+            "Why do I slice?\n\nI hang back and lose it right.",
+        )
+        self.assertEqual(profile["handicap"], "Mid (10-19)")
+        self.assertEqual(profile["common_miss"], "Slice (Right)")
+        self.assertEqual(profile["club"], "Iron")
+
+    def test_empty_fields_stay_empty(self):
+        profile = coach_user_profile(
+            "High (20+)", "Hook (Left)", "Driver", "face_on", "left"
+        )
+        self.assertEqual(profile["post_title"], "")
+        self.assertEqual(profile["post_body"], "")
+        self.assertEqual(profile["golfer_note"], "")
+
+    def test_title_only_and_body_only(self):
+        self.assertEqual(compose_golfer_note("Help", ""), "Help")
+        self.assertEqual(compose_golfer_note("", "I chunk irons"), "I chunk irons")
+        self.assertEqual(compose_golfer_note("   ", "\n"), "")
+
+    def test_long_reddit_body_is_not_truncated(self):
+        long_body = "I hang back. " * 80
+        self.assertGreater(len(long_body), 400)
+        profile = coach_user_profile(
+            "Beginner",
+            "Inconsistent",
+            "Wedge",
+            "dtl",
+            "right",
+            post_title="Range session thoughts",
+            post_body=long_body,
+        )
+        self.assertEqual(profile["post_body"], long_body.strip())
+        self.assertIn(long_body.strip(), profile["golfer_note"])
+        self.assertGreater(len(profile["golfer_note"]), 400)
 
 
 if __name__ == "__main__":

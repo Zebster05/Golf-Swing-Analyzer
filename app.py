@@ -20,7 +20,11 @@ from analysis import (
     hands_mid,
     overlay_layers,
 )
-from gemini_coach import generate_coaching_with_fallback, redact_secrets
+from gemini_coach import (
+    coach_user_profile,
+    generate_coaching_with_fallback,
+    redact_secrets,
+)
 
 # --- SUPPRESS WARNINGS ---
 warnings.filterwarnings("ignore", category=UserWarning, module="google.protobuf")
@@ -598,7 +602,7 @@ def get_ai_coaching(report, user_context):
         5. Identify the 1–3 most damaging faults among OBSERVED items only. Prioritize drills by SEVERITY. A CRITICAL observed fault comes first.
         6. If observed includes ott, early_arm_lift, or a cupped lead wrist, those outrank generic notes.
         7. Wrist labels are low-confidence 2D estimates. Supporting evidence only, never the sole diagnosis.
-        8. user_profile.golfer_note is optional, in the golfer's own words (what they felt or want explained). Address that note using observed data. If they name a miss you cannot see (e.g. slice) say so, and only link it to observed mechanics that could cause it. Never add a fault just because the note mentioned it.
+        8. user_profile.post_title and user_profile.post_body are optional and are the golfer's own words from their Reddit post (title + original post message / OP body, not comments). Treat them as context for what they felt or want explained — not as proof of a fault. Address that context using observed data. If they name a miss you cannot see (e.g. slice) say so, and only link it to observed mechanics that could cause it. Never add a fault just because the post mentioned it. user_profile.golfer_note is the same content concatenated (title then body) if you need a single string.
 
         RESPONSE RULES:
         - Return VALID JSON ONLY.
@@ -1214,12 +1218,16 @@ with tab3:
             )
         with c3:
             club_used = st.selectbox("Club Used", ["Driver", "Iron", "Wedge"], index=1)
-        golfer_note = st.text_area(
-            "Your note (optional)",
-            placeholder="On this swing I slice and I don't understand why.",
-            max_chars=400,
-            height=80,
-            help="Plain language for the coach. Gemini will use it as context, not as proof of a fault.",
+        post_title = st.text_input(
+            "Post title (optional)",
+            placeholder="Reddit post title",
+            help="The original Reddit post title. Gemini will use it as context, not as proof of a fault.",
+        )
+        post_body = st.text_area(
+            "Post message (optional)",
+            placeholder="Original post body (OP message, not comments)",
+            height=120,
+            help="The original Reddit post message. Gemini will use it as context, not as proof of a fault. No character limit.",
         )
         st.markdown("</div>", unsafe_allow_html=True)
 
@@ -1230,12 +1238,17 @@ with tab3:
             st.warning("Analyze a swing first.")
         else:
             # Create a unique context key to check if inputs changed
-            note = (golfer_note or "").strip()
+            title = (post_title or "").strip()
+            body = (post_body or "").strip()
             current_context = (
-                f"{handicap}-{miss_type}-{club_used}-{note}-"
-                f"{st.session_state.results.get('landmarks_detected_count', 0)}-"
-                f"{st.session_state.results.get('view')}-"
-                f"{st.session_state.results.get('handedness')}"
+                handicap,
+                miss_type,
+                club_used,
+                title,
+                body,
+                st.session_state.results.get("landmarks_detected_count", 0),
+                st.session_state.results.get("view"),
+                st.session_state.results.get("handedness"),
             )
 
             # Check if we can use the cache
@@ -1252,14 +1265,15 @@ with tab3:
                 with st.spinner("Consulting PGA biomechanics database..."):
                     st.session_state.coach_response = get_ai_coaching(
                         st.session_state.results.get("report"),
-                        {
-                            "handicap": handicap,
-                            "common_miss": miss_type,
-                            "club": club_used,
-                            "golfer_note": note,
-                            "view": st.session_state.results.get("view"),
-                            "handedness": st.session_state.results.get("handedness"),
-                        },
+                        coach_user_profile(
+                            handicap,
+                            miss_type,
+                            club_used,
+                            st.session_state.results.get("view"),
+                            st.session_state.results.get("handedness"),
+                            post_title=title,
+                            post_body=body,
+                        ),
                     )
                     st.session_state.coach_cache = st.session_state.coach_response
                     st.session_state.last_context = current_context
